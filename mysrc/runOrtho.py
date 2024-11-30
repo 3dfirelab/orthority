@@ -32,11 +32,11 @@ def orthro(args):
    
     outdir = indir+'ortho/'
     indirimg = indir + 'img/'
-    o, p, k = args
+    x, y, z = args[:3]
+    o, p, k = args[3:]
+
     correction_opk = np.array([o,p,k])
-    #atr
-    correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
-    #correction_opk = np.array([0.,3.,-16]) # degree
+    correction_xyz = np.array([x,y,z])
 
     imutogeojson( indir, indir+'io/', imufile, indirimg, flightname, correction_xyz, correction_opk)
  
@@ -70,8 +70,10 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")
 
     #from popt = optimize.fmin(residual, tuple([-1, 3.5, -15]), args=tuple(params), xtol=5, ftol=1.e-4, disp=False
-    correction_opk = [-1.69183706,   3.06752315, -14.98225642] 
-
-    orthro(correction_opk)
+    #correction_opk = [-1.69183706,   3.06752315, -14.98225642] 
+    correction_xyz = [2.10512566e-04,  1.70885594e-04,  2.61422540e-04, ]
+    correction_opk = [-5.52140251e-01,3.34409679e+00, -1.62949875e+01]
+    
+    orthro([*correction_xyz,*correction_opk])
 
 

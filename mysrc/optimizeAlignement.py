@@ -56,19 +56,19 @@ def get_gradient(im) :
 #################################################
 def img2da4residu(idimgs_,rrh):
     atr = xr.open_dataset(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimgs_))
-    atr = atr.rio.reproject(s2.rio.crs)
+    atr = atr.rio.reproject(daRef.rio.crs)
     da = atr.band_data.isel(band=1)
     da_coarse = da.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
     gradAtr,_,_ = get_gradient(da_coarse)
     dagradAtr = xr.DataArray(gradAtr, dims=["y", "x"], coords={"y": da_coarse.y, "x": da_coarse.x})
 
-    dagradAtr_inter = dagradAtr.interp(x=dagradS2.x, y=dagradS2.y)
+    dagradAtr_inter = dagradAtr.interp(x=daRef.x, y=daRef.y)
     #dagradAtr_inter = dagradAtr_inter/80
     #da_mask = dagradAtr_inter.where(~dagradAtr_inter.isnull(), -9999)
     #dagradAtr_inter = dagradAtr_inter.where(dagradAtr_inter<1,1)
     #dagradAtr_inter = dagradAtr_inter.where(da_mask!=-9999,np.nan)
 
-    da1 = dagradAtr_inter.rio.write_crs(s2.rio.crs)
+    da1 = dagradAtr_inter.rio.write_crs(daRef.rio.crs)
     #da1 = da_coarse.interp(x=dagradS2.x, y=dagradS2.y)
     #da1 = da1.rio.write_crs(s2.rio.crs)
     
@@ -81,7 +81,7 @@ def img2da4residu(idimgs_,rrh):
 #################################################
 def residual(args, *params):
    
-    rrh = 5
+    rrh = 3
     o, p, k = args[3:]
     xc, yc, zc = args[:3]
     flag_plot = params[0]
@@ -106,8 +106,8 @@ def residual(args, *params):
             "-o", 
             "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[0]), 
             "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[1]),
-            "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[2]),
-            "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[3]),
+            #"/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[2]),
+            #"/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[3]),
             ]
     
     mask = gpd.read_file(indir+'mask.shp')
@@ -117,26 +117,25 @@ def residual(args, *params):
     
     da1 = img2da4residu(idimgs[0],rrh)
     da2 = img2da4residu(idimgs[1],rrh)
-    da3 = img2da4residu(idimgs[2],rrh)
-    da4 = img2da4residu(idimgs[3],rrh)
+    #da3 = img2da4residu(idimgs[2],rrh)
+    #da4 = img2da4residu(idimgs[3],rrh)
     
-
-    resi = abs((da1-daRef)).sum() + abs((da2-daRef)).sum() +  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
+    resi = abs((da1-da1Ref)).sum() + abs((da2-da2Ref)).sum() #+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
    
     print('{:.3f} {:.3f} {:.3f} {:.1f} {:.1f} {:.1f} | {:f}'.format(xc, yc, zc, o,p,k,resi) )
     
     if flag_plot:
         ax = plt.subplot(121)
-        (da1-daRef).plot(ax=ax)
+        (da1-da1Ref).plot(ax=ax)
         ax = plt.subplot(122)
-        (da2-daRef).plot(ax=ax)
+        (da2-da2Ref).plot(ax=ax)
         plt.figure()
         ax = plt.subplot(111)
-        (daRef).plot(ax=ax,alpha=.5)
+        (da1Ref).plot(ax=ax,alpha=.5)
         (da1).plot.contour(ax=ax,colors='k')
         plt.figure()
         ax = plt.subplot(111)
-        (daRef).plot(ax=ax,alpha=.5)
+        (da2Ref).plot(ax=ax,alpha=.5)
         (da2).plot.contour(ax=ax,colors='k')
 
         plt.show()
@@ -151,28 +150,49 @@ if __name__ == "__main__":
     indir = '/home/paugam/Data/ATR42/as240051/'
     outdir = indir + 'io/'
     imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
-    #imgdirname = 'img'
-    #idimgs = [93,99]   
-    imgdirname = 'img2'
-    idimgs = [50,55,60,65]   
+    imgdirname = 'img'
+    idimgs = [93,99]   
+    #imgdirname = 'img2'
+    #idimgs = [50,55,60,65]   
 
     indirimg = indir + '{:s}/'.format(imgdirname)
     flightname = 'as240051'
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")         
 
     #sentinel
+    
     s2 = xr.open_dataset(indir+'sentinel_background_test_cropped_{:s}.tif'.format(imgdirname))
     gradS2,_,_ = get_gradient(s2.band_data.isel(band=1))
     dagradS2 = xr.DataArray(gradS2, dims=["y", "x"], coords={"y": s2.y, "x": s2.x})
 
     rr = 3
-
     #dagradS2 = dagradS2/1000.
     #dagradS2 = dagradS2.where(dagradS2<1,1)
     daRef = dagradS2
     daRef = daRef.rolling(x=rr, y=rr, center=True).mean()
     daRef = local_normalization(daRef, diskSize=200,)
-    
+    daRef = daRef.rio.write_crs(s2.rio.crs)
+   
+
+    rr = 3
+    da1R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-93.tif')
+    da1R = da1R.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
+    gradda1R,_,_ = get_gradient(da1R.band_data.isel(band=1))
+    dagradda1R = xr.DataArray(gradda1R, dims=["y", "x"], coords={"y": da1R.y, "x": da1R.x})
+    dagradda1R = dagradda1R.interp(x=daRef.x, y=daRef.y)
+    da1Ref = dagradda1R.rolling(x=rr, y=rr, center=True).mean()
+    da1Ref = local_normalization(da1Ref, diskSize=200,)
+    da1Ref = da1Ref.rio.write_crs(da1R.rio.crs)
+
+    da2R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-99.tif')
+    da2R = da2R.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
+    gradda2R,_,_ = get_gradient(da2R.band_data.isel(band=1))
+    dagradda2R = xr.DataArray(gradda2R, dims=["y", "x"], coords={"y": da2R.y, "x": da2R.x})
+    dagradda2R = dagradda2R.interp(x=daRef.x, y=daRef.y)
+    da2Ref = dagradda2R.rolling(x=rr, y=rr, center=True).mean()
+    da2Ref = local_normalization(da2Ref, diskSize=200,)
+    da2Ret = da2Ref.rio.write_crs(da2R.rio.crs)
+
     rranges = (slice(-2,2,.5), slice(-2,2,.5), slice(-2,2,.5), 
                slice(-2, -1, .2), slice(2, 4, .5), slice(-19, -13, 1))
 
@@ -180,7 +200,8 @@ if __name__ == "__main__":
     #resbrute = optimize.brute(residual, rranges, args=params, full_output=True,
     #                          finish=None)
 
-    #residual([ 0,0,0, -0.63767196,   3.36609474, -16.31209226 ], [True])
+    #residual([ 2.10512566e-04,  1.70885594e-04,  2.61422540e-04, 
+    #          -5.52140251e-01, 3.34409679e+00, -1.62949875e+01], [True])
     #sys.exit()
 
     #resbrute.append([-1.69183706,   3.06752315, -14.98225642])
