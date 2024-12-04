@@ -10,9 +10,11 @@ import pdb
 import geopandas as gpd
 import skimage
 from scipy.signal import convolve
-
+import psutil
 #homebrewed
 from imuNcOoGeojson import imutogeojson
+import tempfile
+import orthority as oty
 
 
 #########################################
@@ -57,8 +59,8 @@ def get_gradient(im) :
 def img2da4residu(idimgs_,rrh):
     atr = xr.open_dataset(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimgs_))
     atr = atr.rio.reproject(daRef.rio.crs)
-    da = atr.band_data.isel(band=1)
-    da_coarse = da.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
+    da_ = atr.band_data.isel(band=1)
+    da_coarse = da_.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
     gradAtr,_,_ = get_gradient(da_coarse)
     dagradAtr = xr.DataArray(gradAtr, dims=["y", "x"], coords={"y": da_coarse.y, "x": da_coarse.x})
 
@@ -75,6 +77,12 @@ def img2da4residu(idimgs_,rrh):
     #da1 = da1.rio.clip(mask.geometry.values, mask.crs)
     da1 = da1.rolling(x=rrh, y=rrh, center=True).mean()
     da1 = local_normalization(da1, diskSize=200,)
+
+    atr = None
+    da = None
+    da_coarse = None
+    dagradAtr = None
+    dagradAtr_inter = None
 
     return da1
 
@@ -110,18 +118,33 @@ def residual(args, *params):
             #"/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[3]),
             ]
     
-    mask = gpd.read_file(indir+'mask.shp')
+    #mask = gpd.read_file(indir+'mask.shp')
 
     #run orthorectification
-    result = subprocess.run(command, capture_output=True, text=True)
+    #result = subprocess.run(command, capture_output=True, text=True)
+    #subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+
+    #if process.info['status'] == psutil.STATUS_ZOMBIE:
+    #     print(f"Zombie Process Found: PID={proc.info['pid']}, Name={proc.info['name']}")
+
+
+
     
+    with tempfile.TemporaryFile() as tempf:
+        process = subprocess.Popen(command, stdout=tempf)
+        process.communicate()
+
+
+
     da1 = img2da4residu(idimgs[0],rrh)
     da2 = img2da4residu(idimgs[1],rrh)
     #da3 = img2da4residu(idimgs[2],rrh)
     #da4 = img2da4residu(idimgs[3],rrh)
     
     resi = abs((da1-da1Ref)).sum() + abs((da2-da2Ref)).sum() #+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
-   
+ 
     print('{:.3f} {:.3f} {:.3f} {:.1f} {:.1f} {:.1f} | {:f}'.format(xc, yc, zc, o,p,k,resi) )
     
     if flag_plot:
@@ -140,6 +163,9 @@ def residual(args, *params):
 
         plt.show()
         pdb.set_trace()
+    
+    da1 = None
+    da2 = None
 
     return resi
 
@@ -147,7 +173,7 @@ def residual(args, *params):
 ##################################
 if __name__ == "__main__":
 ##################################
-    indir = '/home/paugam/Data/ATR42/as240051/'
+    indir = '/mnt/data/ATR42/as240051/' #'/home/paugam/Data/ATR42/as240051/'
     outdir = indir + 'io/'
     imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
     imgdirname = 'img'
@@ -183,6 +209,7 @@ if __name__ == "__main__":
     da1Ref = dagradda1R.rolling(x=rr, y=rr, center=True).mean()
     da1Ref = local_normalization(da1Ref, diskSize=200,)
     da1Ref = da1Ref.rio.write_crs(da1R.rio.crs)
+    da1Ref = da1Ref.fillna(1)
 
     da2R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-99.tif')
     da2R = da2R.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
@@ -192,21 +219,22 @@ if __name__ == "__main__":
     da2Ref = dagradda2R.rolling(x=rr, y=rr, center=True).mean()
     da2Ref = local_normalization(da2Ref, diskSize=200,)
     da2Ret = da2Ref.rio.write_crs(da2R.rio.crs)
+    da2Ref = da2Ref.fillna(1)
 
     rranges = (slice(-2,2,.5), slice(-2,2,.5), slice(-2,2,.5), 
                slice(-2, -1, .2), slice(2, 4, .5), slice(-19, -13, 1))
 
     params = [False]
-    #resbrute = optimize.brute(residual, rranges, args=params, full_output=True,
-    #                          finish=None)
+    resbrute = optimize.brute(residual, rranges, args=params, full_output=False,
+                              finish=None)
 
     #residual([ 2.10512566e-04,  1.70885594e-04,  2.61422540e-04, 
     #          -5.52140251e-01, 3.34409679e+00, -1.62949875e+01], [True])
     #sys.exit()
 
     #resbrute.append([-1.69183706,   3.06752315, -14.98225642])
-    resbrute = []
-    resbrute.append([0,0,0, -0.63767196,   3.36609474, -16.31209226])
+    #resbrute = []
+    #resbrute.append([0,0,0, -0.63767196,   3.36609474, -16.31209226])
     popt = optimize.fmin(residual, tuple(resbrute[0]), args=tuple(params), xtol=0.1, ftol=1.e0, disp=False)
 
 
