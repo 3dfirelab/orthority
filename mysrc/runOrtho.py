@@ -30,15 +30,13 @@ def get_gradient(im) :
 #################################################
 def orthro(args):
    
-    outdir = indir+'ortho/'
-    indirimg = indir + 'img/'
     x, y, z = args[:3]
     o, p, k = args[3:]
 
     correction_opk = np.array([o,p,k])
     correction_xyz = np.array([x,y,z])
 
-    imutogeojson( indir, indir+'io/', imufile, indirimg, flightname, correction_xyz, correction_opk)
+    imutogeojson( indir, outdirIO, imufile, indirimg, flightname, correction_xyz, correction_opk)
  
     if os.path.isdir(outdir):
         shutil.rmtree(outdir)
@@ -47,13 +45,13 @@ def orthro(args):
     command = [
             "oty", "frame",
             "--dem", '{:s}/dem/dem.tif'.format(indir),
-            "--int-param", "{:s}/io/as240051_int_param.yaml".format(indir),
-            "--ext-param", "{:s}/io/as240051_ext_param.geojson".format(indir),
+            "--int-param", "{:s}/as240051_int_param.yaml".format(outdirIO),
+            "--ext-param", "{:s}/as240051_ext_param.geojson".format(outdirIO),
             "--out-dir", outdir,
             "-o", 
-            "/{:s}/img/as240051_20241113_103254-*.tif".format(indir), 
+            "/{:s}as240051_20241113_103254-*.tif".format(indirimg), 
             ]
-    
+    pdb.set_trace() 
     #run orthorectification
     result = subprocess.run(command, capture_output=True, text=True)
 
@@ -63,8 +61,11 @@ def orthro(args):
 ##################################
 if __name__ == "__main__":
 ##################################
-    indir = '/home/paugam/Data/ATR42/as240051/'
-    outdir = indir + 'io/'
+    indir = '/mnt/data/ATR42/as240051/'
+    indirimg = indir + 'img2/'
+    outdirIO = indir + 'io2/'
+    outdir = indir+'ortho2/'
+
     imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
     flightname = 'as240051'
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")

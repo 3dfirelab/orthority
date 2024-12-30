@@ -16,6 +16,7 @@ from imuNcOoGeojson import imutogeojson
 import tempfile
 import orthority as oty
 
+import gc
 
 #########################################
 def local_normalization(da, diskSize=30,):
@@ -23,20 +24,26 @@ def local_normalization(da, diskSize=30,):
     #idx = np.where(mask==1)
     #trange_ = [input_float[idx].min(), input_float[idx].max()]
     #img = convert_2_uint16(input_float, trange_ )
-    input_float = np.array(da.data)
+    input_float = np.array(da.data,dtype=np.float32)
     idx = np.where(~np.isnan(input_float))
     idxnan = np.where(np.isnan(input_float))
-    trange = [np.percentile(input_float[idx],20), np.percentile(input_float[idx],80)]
+    mask = np.zeros_like(input_float)
+    mask[idx] = 1
+    try: 
+        trange = [np.percentile(input_float[idx],20), np.percentile(input_float[idx],80)]
+    except: 
+        pdb.set_trace()
     input_float = np.where(input_float<trange[0],trange[0],input_float)
     input_float = np.where(input_float>trange[1],trange[1],input_float)
     
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        img = skimage.img_as_uint((input_float-trange[0])/(trange[1]-trange[0]),force_copy=True)
+        input_float[idxnan] = trange[1]
+        img = skimage.img_as_uint((input_float-trange[0])/(trange[1]-trange[0]))
 
         selem = skimage.morphology.disk(diskSize)
         #img_eq = skimage.filters.rank.equalize(img, selem=selem, mask=mask)
-        img_eq = skimage.filters.rank.equalize(img, footprint=selem)
+        img_eq = skimage.filters.rank.equalize(img, footprint=selem, mask=mask)
     
     da.data = np.float32((img_eq/6.5535e4) )
     da.data[idxnan] = np.nan
@@ -53,58 +60,70 @@ def get_gradient(im) :
     grad = cv2.addWeighted(np.absolute(grad_x), 0.5, np.absolute(grad_y), 0.5, 0)
     
     mag, angle = cv2.cartToPolar(grad_x,grad_y)
-    return grad, mag, angle
+    return grad
 
 #################################################
-def img2da4residu(idimgs_,rrh):
-    atr = xr.open_dataset(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimgs_))
-    atr = atr.rio.reproject(daRef.rio.crs)
-    da_ = atr.band_data.isel(band=1)
-    da_coarse = da_.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
-    gradAtr,_,_ = get_gradient(da_coarse)
-    dagradAtr = xr.DataArray(gradAtr, dims=["y", "x"], coords={"y": da_coarse.y, "x": da_coarse.x})
-
-    dagradAtr_inter = dagradAtr.interp(x=daRef.x, y=daRef.y)
+def img2da4residu(idimgs_,rrh, atr):
+   
+    #with  xr.open_dataset(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimgs_)) as atr: 
+        #atr = atr.rio.reproject(daRef.rio.crs)
+        
+    da1 = atr.band_data.isel(band=1)
+    da1 = da1.coarsen(dim={'x': 2, 'y': 2}, boundary="trim").mean()
+    da1 = xr.DataArray(get_gradient(da1), dims=["y", "x"], coords={"y": da1.y, "x": da1.x})
+    da1 = da1.interp(x=da1Ref.x, y=da1Ref.y)
     #dagradAtr_inter = dagradAtr_inter/80
     #da_mask = dagradAtr_inter.where(~dagradAtr_inter.isnull(), -9999)
     #dagradAtr_inter = dagradAtr_inter.where(dagradAtr_inter<1,1)
     #dagradAtr_inter = dagradAtr_inter.where(da_mask!=-9999,np.nan)
 
-    da1 = dagradAtr_inter.rio.write_crs(daRef.rio.crs)
+    #da1 = da1.rio.write_crs(daRef.rio.crs)
     #da1 = da_coarse.interp(x=dagradS2.x, y=dagradS2.y)
     #da1 = da1.rio.write_crs(s2.rio.crs)
     
     #da1 = da1.rio.clip(mask.geometry.values, mask.crs)
     da1 = da1.rolling(x=rrh, y=rrh, center=True).mean()
+    
+    nan_count = da1.isnull().sum()  # Count of NaN values
+    total_count = da1.size          # Total number of elements
+    nan_coverage = nan_count / total_count  # Fraction of NaN values
+    if nan_coverage > 0.9: 
+        return da1 
     da1 = local_normalization(da1, diskSize=200,)
-
-    atr = None
-    da = None
-    da_coarse = None
-    dagradAtr = None
-    dagradAtr_inter = None
 
     return da1
 
 #################################################
 def residual(args, *params):
    
+    #mem0 = psutil.virtual_memory()
     rrh = 3
-    o, p, k = args[3:]
-    xc, yc, zc = args[:3]
+    
+    if len(args)==6: 
+        o, p, k = args[3:]
+        xc, yc, zc = args[:3]
+    elif len(args)==3: 
+        o, p, k = args[:]
+        xc, yc, zc = params[1:4]
+
     flag_plot = params[0]
+    demFile =  '{:s}/dem/dem.tif'.format(indir)
+
     correction_opk = np.array([o,p,k])
     correction_xyz = np.array([xc,yc,zc])
     #atr
     #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
     #correction_opk = np.array([0.,3.,-16]) # degree
+    src_files = ["/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimg) for idimg in idimgs] 
 
-    imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk)
+    str_tag = '_{:.1f}{:.1f}{:.1f}_{:.1f}{:.1f}{:.1f}'.format(*correction_xyz,*correction_opk).replace('.','p')
+    imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk, src_files,str_tag=str_tag)
  
     for idimg in idimgs:
         if os.path.isfile(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimg)):
             os.remove(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimg))
-   
+  
+    '''
     command = [
             "oty", "frame",
             "--dem", '{:s}/dem/dem.tif'.format(indir),
@@ -117,67 +136,92 @@ def residual(args, *params):
             #"/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[2]),
             #"/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimgs[3]),
             ]
-    
+    '''
     #mask = gpd.read_file(indir+'mask.shp')
 
     #run orthorectification
     #result = subprocess.run(command, capture_output=True, text=True)
     #subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = process.communicate()
+    #process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    #stdout, stderr = process.communicate()
 
     #if process.info['status'] == psutil.STATUS_ZOMBIE:
     #     print(f"Zombie Process Found: PID={proc.info['pid']}, Name={proc.info['name']}")
 
+            
+    extparamFile =  "{:s}/io/as240051_ext_param{:s}.geojson".format(indir,str_tag)
+    #create a camera model for src_file from interior & exterior parameters
+    cameras = oty.FrameCameras(intparamFile, extparamFile)
 
+    for idimg in idimgs:
+        src_file =  "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimg) 
+        camera = cameras.get(src_file)
+        # create Ortho object and orthorectify
+        ortho = oty.Ortho(src_file, demFile, camera=camera, crs=cameras.crs)
+        ortho.process( indir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag), overwrite=True)
+   
 
+    resi = float(1.0)
+    #mem1 = psutil.virtual_memory()
+    atr = xr.open_dataset(indir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimgs[0],str_tag))
+    #atr2 = atr.rio.reproject(daRef.rio.crs)
+    #del atr
+    da1 = img2da4residu(idimgs[0],rrh,atr)
+    #da2 = img2da4residu(idimgs[1],rrh)
+    resi = float(abs((da1-da1Ref)).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
+   
+    #del da2 
+    #gc.collect()
+    #mem2 = psutil.virtual_memory()
+    #print(mem2.used/mem1.used)
+   
+    #print('{:.1f},{:.1f},{:.1f}  {:.1f},{:.1f},{:.1f} | {:.1f} | {:.3f}'.format(xc, yc, zc, o, p, k,resi, mem2.used/mem1.used))
     
-    with tempfile.TemporaryFile() as tempf:
-        process = subprocess.Popen(command, stdout=tempf)
-        process.communicate()
+    '''snapshot = tracemalloc.take_snapshot()
+    top_stats = snapshot.statistics('lineno')
 
-
-
-    da1 = img2da4residu(idimgs[0],rrh)
-    da2 = img2da4residu(idimgs[1],rrh)
-    #da3 = img2da4residu(idimgs[2],rrh)
-    #da4 = img2da4residu(idimgs[3],rrh)
-    
-    resi = abs((da1-da1Ref)).sum() + abs((da2-da2Ref)).sum() #+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
- 
-    print('{:.3f} {:.3f} {:.3f} {:.1f} {:.1f} {:.1f} | {:f}'.format(xc, yc, zc, o,p,k,resi) )
+    for stat in top_stats[:3]:
+        print(stat)
+    '''
     
     if flag_plot:
-        ax = plt.subplot(121)
+        ax = plt.subplot(111)
         (da1-da1Ref).plot(ax=ax)
-        ax = plt.subplot(122)
-        (da2-da2Ref).plot(ax=ax)
+        #ax = plt.subplot(122)
+        #(da2-da2Ref).plot(ax=ax)
         plt.figure()
         ax = plt.subplot(111)
         (da1Ref).plot(ax=ax,alpha=.5)
         (da1).plot.contour(ax=ax,colors='k')
-        plt.figure()
-        ax = plt.subplot(111)
-        (da2Ref).plot(ax=ax,alpha=.5)
-        (da2).plot.contour(ax=ax,colors='k')
+        #plt.figure()
+        #ax = plt.subplot(111)
+        #(da2Ref).plot(ax=ax,alpha=.5)
+        #(da2).plot.contour(ax=ax,colors='k')
 
         plt.show()
         pdb.set_trace()
+  
+    if not(flag_plot):
+        os.remove(extparamFile)
+        os.remove(indir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimgs[0],str_tag))
     
-    da1 = None
-    da2 = None
+    del atr,da1
 
-    return resi
+    return float(resi)
 
 
 ##################################
 if __name__ == "__main__":
 ##################################
+    import tracemalloc
+    tracemalloc.start()
+    
+
     indir = '/mnt/data/ATR42/as240051/' #'/home/paugam/Data/ATR42/as240051/'
     outdir = indir + 'io/'
     imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
     imgdirname = 'img'
-    idimgs = [93,99]   
+    idimgs = [93]   
     #imgdirname = 'img2'
     #idimgs = [50,55,60,65]   
 
@@ -185,10 +229,11 @@ if __name__ == "__main__":
     flightname = 'as240051'
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")         
 
+    intparamFile = "{:s}/io/as240051_int_param.yaml".format(indir)
+
     #sentinel
-    
     s2 = xr.open_dataset(indir+'sentinel_background_test_cropped_{:s}.tif'.format(imgdirname))
-    gradS2,_,_ = get_gradient(s2.band_data.isel(band=1))
+    gradS2 = get_gradient(s2.band_data.isel(band=1))
     dagradS2 = xr.DataArray(gradS2, dims=["y", "x"], coords={"y": s2.y, "x": s2.x})
 
     rr = 3
@@ -202,8 +247,11 @@ if __name__ == "__main__":
 
     rr = 3
     da1R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-93.tif')
-    da1R = da1R.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
-    gradda1R,_,_ = get_gradient(da1R.band_data.isel(band=1))
+    da1R = da1R.band_data.isel(band=1)
+    da1R = da1R.drop_vars(['band'])
+    #da1R = da1R.rio.reproject(27563)
+    da1R = da1R.coarsen(dim={'x': 2, 'y': 2}, boundary="trim").mean()
+    gradda1R = get_gradient(da1R)
     dagradda1R = xr.DataArray(gradda1R, dims=["y", "x"], coords={"y": da1R.y, "x": da1R.x})
     dagradda1R = dagradda1R.interp(x=daRef.x, y=daRef.y)
     da1Ref = dagradda1R.rolling(x=rr, y=rr, center=True).mean()
@@ -211,30 +259,50 @@ if __name__ == "__main__":
     da1Ref = da1Ref.rio.write_crs(da1R.rio.crs)
     da1Ref = da1Ref.fillna(1)
 
+    
     da2R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-99.tif')
-    da2R = da2R.coarsen(dim={'x': 3, 'y': 3}, boundary="trim").mean()
-    gradda2R,_,_ = get_gradient(da2R.band_data.isel(band=1))
+    da2R = da2R.coarsen(dim={'x': 2, 'y': 2}, boundary="trim").mean()
+    gradda2R = get_gradient(da2R.band_data.isel(band=1))
     dagradda2R = xr.DataArray(gradda2R, dims=["y", "x"], coords={"y": da2R.y, "x": da2R.x})
     dagradda2R = dagradda2R.interp(x=daRef.x, y=daRef.y)
     da2Ref = dagradda2R.rolling(x=rr, y=rr, center=True).mean()
     da2Ref = local_normalization(da2Ref, diskSize=200,)
     da2Ret = da2Ref.rio.write_crs(da2R.rio.crs)
     da2Ref = da2Ref.fillna(1)
+    
+    if True: 
+        #popt = np.array([ -0.93871095,  -1.06893665,  -1.03742455,  -1.56363453, 2.64046062, -15.92574779])
+        popt = np.array([-0.96509656,  -1.02242933,  -1.02461382,  -1.54239457, 2.6027513 , -15.99057932])
+        residual( popt , True)
+        sys.exit()
 
-    rranges = (slice(-2,2,.5), slice(-2,2,.5), slice(-2,2,.5), 
-               slice(-2, -1, .2), slice(2, 4, .5), slice(-19, -13, 1))
+    rranges = (slice(-1,1.5,.5), slice(-1,1.5,.5), slice(-1,1.5,.5), 
+               slice(-2, 0, .5), slice(2, 5, 1), slice(-19, -10, 3))
 
-    params = [False]
-    resbrute = optimize.brute(residual, rranges, args=params, full_output=False,
-                              finish=None)
+    if not(os.path.isfile('resbrute1.npy')):
+        params = [False]
+        resbrute1 = optimize.brute(residual, rranges, args=params, full_output=False,
+                                  finish=None, workers=16 )
+        
+        np.save('resbrute1.npy',resbrute1)
+    else:
+        resbrute1 = np.load('resbrute1.npy')
 
-    #residual([ 2.10512566e-04,  1.70885594e-04,  2.61422540e-04, 
-    #          -5.52140251e-01, 3.34409679e+00, -1.62949875e+01], [True])
-    #sys.exit()
+    print(resbrute1)
+    xc,yc,zc,oc,pc,kc = resbrute1
+    rranges = (slice(oc-1,oc+1,.1), slice(pc-1,pc+1,.1), slice(kc-1,  kc+1,  .1))
+    params = [False,xc,yc,zc]
+    resbrute2 = optimize.brute(residual, rranges, args=params, full_output=False,
+                              finish=None, workers=16 )
+    
+    print(resbrute2)
+    resbrutef =  [xc,yc,zc] + list(resbrute2)
+
+    popt = optimize.fmin(residual, tuple(resbrutef), args=tuple(params), xtol=0.1, ftol=1.e0, disp=False)
+
 
     #resbrute.append([-1.69183706,   3.06752315, -14.98225642])
     #resbrute = []
     #resbrute.append([0,0,0, -0.63767196,   3.36609474, -16.31209226])
-    popt = optimize.fmin(residual, tuple(resbrute[0]), args=tuple(params), xtol=0.1, ftol=1.e0, disp=False)
 
 

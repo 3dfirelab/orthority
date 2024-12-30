@@ -10,6 +10,9 @@ import pyproj
 import warnings
 from rasterio.errors import NotGeoreferencedWarning
 warnings.simplefilter('ignore', NotGeoreferencedWarning)
+import pdb 
+import pandas as pd 
+
 
 ##################################
 def append_to_dict(file_name, xyz, opk, latlonalt, data_dict):
@@ -63,90 +66,113 @@ def transform_point(x, y, z, X_IMU, Y_IMU, Z_IMU, o, p, k):
     return global_point
 
 #####################################
-def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk):
-    
-    imu = xr.open_dataset(indir+imufile)
-    frames = sorted(glob.glob(indirimg+'*.tif'))
+def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk, frames=None, str_tag=''):
+  
 
 
-    crs = pyproj.CRS.from_epsg(27563)
-    data_dict = {
-                "type": "FeatureCollection",
-                "world_crs":  crs.to_proj4(),
-                "features": []
-                }
-    # Define the coordinate systems
-    wgs84 = pyproj.CRS('EPSG:4326')  # WGS84 (lat/lon)
-    utm = pyproj.CRS('EPSG:27563')   # EPSG:27563 (projected CRS)
-    # Initialize the transformer
-    transformer = pyproj.Transformer.from_crs(wgs84, utm, always_xy=True)
+    with xr.open_dataset(indir+imufile) as imu:
+        if frames is None:
+            frames = sorted(glob.glob(indirimg+'*.tif'))
 
 
-    for frame in frames:
+        crs = pyproj.CRS.from_epsg(32631)
+        data_dict = {
+                    "type": "FeatureCollection",
+                    "world_crs":  crs.to_proj4(),
+                    "features": []
+                    }
+        # Define the coordinate systems
+        wgs84 = pyproj.CRS('EPSG:4326')  # WGS84 (lat/lon)
+        # Initialize the transformer
+        transformer = pyproj.Transformer.from_crs(wgs84, crs, always_xy=True)
+
+
+        #df = pd.DataFrame(columns=['Photo','X','Y','Z','Yaw','Pitch','Roll'])
         
-        with rasterio.open(frame) as src:
-            # Read metadata
-            metadata = src.tags()
+        for frame in frames:
             
-            # Check for time-related metadata (if available)
-            time = datetime.datetime.strptime(metadata.get('TIFFTAG_DATETIME', 'Time not available'),
-                                               "%Y:%m:%d %H:%M:%S")
-            
-            idx = np.abs(imu.time-np.datetime64(time)).argmin()
-            #print(time, idx.data, end=' | ')
+            with rasterio.open(frame.replace('_masked','')) as src:
+                # Read metadata
+                metadata = src.tags()
+                
+                # Check for time-related metadata (if available)
+                time = datetime.datetime.strptime(metadata.get('TIFFTAG_DATETIME', 'Time not available'),
+                                                   "%Y:%m:%d %H:%M:%S")
+                
+                idx = np.abs(imu.time-np.datetime64(time)).argmin()
+                #print(time, idx.data, end=' | ')
 
-            #latlonZ
-            lat = float(imu.LATITUDE[idx].data)
-            lon = float(imu.LONGITUDE[idx].data)
-            alt = float(imu.ALTITUDE[idx].data)
-            #opk
-            position = float(imu.PITCH[idx].data)
-            orientation = float(imu.ROLL[idx].data)
-            kinematics = (float(imu.THEAD[idx].data) - 180) % 360
-            #xyz
-            Ximu, Yimu = transformer.transform(lon, lat)
-            Zimu = alt
+                #latlonZ
+                lat = float(imu.LATITUDE[idx].data)
+                lon = float(imu.LONGITUDE[idx].data)
+                alt = float(imu.ALTITUDE[idx].data)
+                #opk
+                position = float(imu.PITCH[idx].data)
+                orientation = float(imu.ROLL[idx].data)
+                kinematics = (float(imu.THEAD[idx].data) - 180) % 360
+                #kinematics = float(imu.THEAD[idx].data)
+                #xyz
+                Ximu, Yimu = transformer.transform(lon, lat)
+                Zimu = alt
+        
+                #correction in the arcraft referentiel
+                #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
+                #correction_opk = np.array([-1.,3.,-16]) # degree
+                
+                #apply correction 
+                xavion = -479.e-2    + correction_xyz[0]
+                yavion = 24.5e-2   + correction_xyz[1]
+                zavion = 20e-2      + correction_xyz[2]
+                opk = np.array([orientation, position, kinematics])+correction_opk
+                
+                #transformation from 
+                xyz = transform_point(xavion, yavion, zavion, Ximu, Yimu, Zimu, opk[0], opk[1], opk[2])
+       
+
+                #print('{:.1f}   {:.1f}  {:.1f}'.format(*xyz) + 
+                #   '   {:.1f}   {:.1f}  {:.1f}'.format(*opk ))
+                # Append a new feature to the dict
+                append_to_dict(
+                    os.path.basename(frame).split('.ti')[0],
+                    list(xyz),  # Example xyz coordinates
+                    list(3.14/180*opk),  # Example opk # conversion to radian
+                    [lon,lat,alt],  # Example xyz coordinates
+                    data_dict
+                )
+
+                #for csv file
+                new_row = {'Photo': os.path.basename(frame), 
+                           'X':lon, 
+                           'Y':lat, 
+                           'Z':alt, 
+                           'Yaw':opk[2],
+                           'Pitch':opk[1],
+                           'Roll':opk[0] 
+                           }
+                #new_row_df = pd.DataFrame([new_row])
+                #df = pd.concat([df, new_row_df], ignore_index=True)
+
+        # Now, data_dict contains the added feature, and you can dump it to a JSON file
+        with open('{:s}/{:s}_ext_param{:s}.geojson'.format(outdir,flightname,str_tag), 'w') as f:
+            json.dump(data_dict, f, indent=4)
+
+        
+        #df.to_csv('{:s}/{:s}_ext_param.csv'.format(outdir,flightname), index=False)
+
     
-            #correction in the arcraft referentiel
-            #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
-            #correction_opk = np.array([-1.,3.,-16]) # degree
-            
-            #apply correction 
-            xavion = -479.e-2    + correction_xyz[0]
-            yavion = 24.5e-2   + correction_xyz[1]
-            zavion = 20e-2      + correction_xyz[2]
-            opk = np.array([orientation, position, kinematics])+correction_opk
-            
-            #transformation from 
-            xyz = transform_point(xavion, yavion, zavion, Ximu, Yimu, Zimu, opk[0], opk[1], opk[2])
-   
-
-            #print('{:.1f}   {:.1f}  {:.1f}'.format(*xyz) + 
-            #   '   {:.1f}   {:.1f}  {:.1f}'.format(*opk ))
-            # Append a new feature to the dict
-            append_to_dict(
-                os.path.basename(frame).split('.ti')[0],
-                list(xyz),  # Example xyz coordinates
-                list(3.14/180*opk),  # Example opk # conversion to radian
-                [lon,lat,alt],  # Example xyz coordinates
-                data_dict
-            )
-
-    # Now, data_dict contains the added feature, and you can dump it to a JSON file
-    with open('{:s}/{:s}_ext_param.geojson'.format(outdir,flightname), 'w') as f:
-        json.dump(data_dict, f, indent=4)
+    return 
 
 ##################################
 if __name__ == "__main__":
 ##################################
-    indir = '/home/paugam/Data/ATR42/as240051/'
-    outdir = indir + 'io/'
+    indir = '/mnt/data/ATR42/as240051/'
+    outdir = indir + 'io2/'
     imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
-    indirimg = indir + 'img/'
+    indirimg = indir + 'img2/'
     flightname = 'as240051'
             
     correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
-    correction_opk = np.array([-1.,3.,-16]) # degree
+    correction_opk = np.array([0.,0.,0]) # degree
 
     imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk)
     
