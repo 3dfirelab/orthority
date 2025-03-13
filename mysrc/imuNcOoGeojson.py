@@ -12,7 +12,7 @@ from rasterio.errors import NotGeoreferencedWarning
 warnings.simplefilter('ignore', NotGeoreferencedWarning)
 import pdb 
 import pandas as pd 
-
+import math 
 
 ##################################
 def append_to_dict(file_name, xyz, opk, latlonalt, data_dict):
@@ -65,6 +65,78 @@ def transform_point(x, y, z, X_IMU, Y_IMU, Z_IMU, o, p, k):
 
     return global_point
 
+'''
+def rpy_to_rotation_matrix(roll, pitch, yaw):
+    """Generate a rotation matrix from RPY angles."""
+    Rz_yaw = np.array([
+        [np.cos(yaw), -np.sin(yaw), 0],
+        [np.sin(yaw), np.cos(yaw), 0],
+        [0, 0, 1]
+    ])
+    Ry_pitch = np.array([
+        [np.cos(pitch), 0, np.sin(pitch)],
+        [0, 1, 0],
+        [-np.sin(pitch), 0, np.cos(pitch)]
+    ])
+    Rx_roll = np.array([
+        [1, 0, 0],
+        [0, np.cos(roll), -np.sin(roll)],
+        [0, np.sin(roll), np.cos(roll)]
+    ])
+    return Rz_yaw @ Ry_pitch @ Rx_roll
+'''
+
+def rotation_matrix_to_opk(R):
+    """Extract Omega, Phi, Kappa from a rotation matrix."""
+    omega = np.arctan2(R[0, 2], R[2, 2])  # Rotation around X-axis
+    phi = np.arcsin(-R[1, 2])               # Rotation around Y-axis
+    kappa = -1*np.arctan2(R[1, 0], R[1, 1])  # Rotation around Z-axis
+    return np.degrees(omega), np.degrees(phi), np.degrees(kappa)
+
+
+
+def rpy_to_rotation_matrix(roll, pitch, yaw):
+    """
+    Converts euler angles to a rotation matrix
+    """
+    roll, pitch, yaw = np.radians(roll), np.radians(pitch), np.radians(yaw)
+    size = (3,3)
+    RX = np.zeros(size)
+    RY = np.zeros(size)
+    RZ = np.zeros(size)
+    
+    # convert from array to matrix
+    RX = np.matrix(RX)
+    RY = np.matrix(RY)
+    RZ = np.matrix(RZ)
+    
+    c = np.cos(yaw)
+    s = np.sin(yaw)
+    RZ[0,0] = c
+    RZ[0,1] = -s
+    RZ[1,0] = s
+    RZ[1,1] = c
+    RZ[2,2] = 1
+
+    c = np.cos(pitch)
+    s = np.sin(pitch)
+    RY[0,0] = c
+    RY[0,2] = s
+    RY[2,0] = -s
+    RY[2,2] = c
+    RY[1,1] = 1
+    
+    c = np.cos(roll)
+    s = np.sin(roll)
+    RX[1,1] = c 
+    RX[1,2] = -s
+    RX[2,1] = s
+    RX[2,2] = c
+    RX[0,0] = 1
+
+    # combine to final rotation matrix
+    return RZ@RY@RX
+
 #####################################
 def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk, frames=None, str_tag=''):
   
@@ -84,10 +156,11 @@ def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, 
         # Define the coordinate systems
         wgs84 = pyproj.CRS('EPSG:4326')  # WGS84 (lat/lon)
         # Initialize the transformer
-        transformer = pyproj.Transformer.from_crs(wgs84, crs, always_xy=True)
+        transformer     = pyproj.Transformer.from_crs(wgs84, crs, always_xy=True)
+        transformer_inv = pyproj.Transformer.from_crs(crs, wgs84, always_xy=True)
 
 
-        #df = pd.DataFrame(columns=['Photo','X','Y','Z','Yaw','Pitch','Roll'])
+        df = None #pd.DataFrame(columns=['Photo','X','Y','Z','Yaw','Pitch','Roll'])
         
         for frame in frames:
             
@@ -107,10 +180,20 @@ def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, 
                 lon = float(imu.LONGITUDE[idx].data)
                 alt = float(imu.ALTITUDE[idx].data)
                 #opk
-                position = float(imu.PITCH[idx].data)
-                orientation = float(imu.ROLL[idx].data)
-                kinematics = (float(imu.THEAD[idx].data) - 180) % 360
-                #kinematics = float(imu.THEAD[idx].data)
+
+                # Example Usage
+                roll, pitch, yaw = float(imu.ROLL[idx].data), float(imu.PITCH[idx].data), float(imu.THEAD[idx].data)  # Example input angles in degrees
+                #print('------')
+                #print( roll, pitch, yaw)
+                
+                R = rpy_to_rotation_matrix(roll, pitch, yaw)
+                omega, phi, kappa = rotation_matrix_to_opk(R)
+                #print( omega, phi, kappa)
+               
+                position = phi
+                orientation = omega
+                #kinematics = (float(imu.THEAD[idx].data) - 180) % 360
+                kinematics = kappa
                 #xyz
                 Ximu, Yimu = transformer.transform(lon, lat)
                 Zimu = alt
@@ -127,7 +210,9 @@ def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, 
                 
                 #transformation from 
                 xyz = transform_point(xavion, yavion, zavion, Ximu, Yimu, Zimu, opk[0], opk[1], opk[2])
-       
+      
+                lon, alt = transformer_inv.transform(*xyz[:2])
+                alt = xyz[-1]
 
                 #print('{:.1f}   {:.1f}  {:.1f}'.format(*xyz) + 
                 #   '   {:.1f}   {:.1f}  {:.1f}'.format(*opk ))
@@ -139,25 +224,30 @@ def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, 
                     [lon,lat,alt],  # Example xyz coordinates
                     data_dict
                 )
-
+                
+                
                 #for csv file
                 new_row = {'Photo': os.path.basename(frame), 
                            'X':lon, 
                            'Y':lat, 
                            'Z':alt, 
-                           'Yaw':opk[2],
-                           'Pitch':opk[1],
-                           'Roll':opk[0] 
+                           'Roll':roll, 
+                           'Pitch':pitch,
+                           'Yaw': yaw,
                            }
-                #new_row_df = pd.DataFrame([new_row])
-                #df = pd.concat([df, new_row_df], ignore_index=True)
-
+                new_row_df = pd.DataFrame([new_row])
+                
+                if df is None:
+                    df = new_row_df
+                else:
+                    df = pd.concat([df, new_row_df], ignore_index=True)
+                
         # Now, data_dict contains the added feature, and you can dump it to a JSON file
         with open('{:s}/{:s}_ext_param{:s}.geojson'.format(outdir,flightname,str_tag), 'w') as f:
             json.dump(data_dict, f, indent=4)
 
         
-        #df.to_csv('{:s}/{:s}_ext_param.csv'.format(outdir,flightname), index=False)
+        df.to_csv('{:s}/{:s}_ext_param.csv'.format(outdir,flightname), index=False)
 
     
     return 
@@ -172,7 +262,7 @@ if __name__ == "__main__":
     flightname = 'as240051'
             
     correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
-    correction_opk = np.array([0.,0.,0]) # degree
+    correction_opk = np.array([0.,-0.1,0]) # degree
 
     imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk)
     

@@ -5,8 +5,8 @@ import glob
 import sys
 import os 
 
-indir = '/home/paugam/Data/ATR42/as240051/'
-imgdirname = 'img2'
+indir = '/mnt/data/ATR42/as240051/'
+imgdirname = 'img_manualOrtho'
 
 input_tiffs = sorted(glob.glob(indir+'/{:s}/*.tif'.format(imgdirname)))
 nodata_value = np.nan
