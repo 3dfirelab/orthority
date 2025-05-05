@@ -40,11 +40,10 @@ def orthro(args):
     correction_opk = np.array([o,p,k])
     correction_xyz = np.array([x,y,z])
 
-    imuNcOoGeojson.imutogeojson( indir, wkdir, imufile, indirimg, flightname, correction_xyz, correction_opk)
- 
-    if os.path.isdir(outdir):
-        shutil.rmtree(outdir)
-    os.makedirs(outdir, exist_ok=True)
+    print('process imu ...')
+    #imuNcOoGeojson.imutogeojson( indir, wkdir, imufile, indirimg, flightname, correction_xyz, correction_opk)
+    print('done                ') 
+
    
     '''
     command = [
@@ -60,7 +59,8 @@ def orthro(args):
     #run orthorectification
     result = subprocess.run(command, capture_output=True, text=True)
     '''
-    demFile =  '{:s}/dem/dem.tif'.format(indir)
+    
+    demFile =  '{:s}/dem/dem_srtm30.tif'.format(indir)
     str_tag = ''
     extparamFile =  "{:s}/as240051_ext_param{:s}.geojson".format(wkdir,str_tag)
     #create a camera model for src_file from interior & exterior parameters
@@ -85,11 +85,15 @@ def orthro(args):
 ##################################
 if __name__ == "__main__":
 ##################################
-    indir = '/mnt/data/ATR42/as240051/'
-    indirimg = indir + 'img22/'
-    outdirIO = indir + 'io/'
-    outdir = indir+'ortho22/'
-    wkdir = './wkdir/'
+    indir = '/mnt/dataEstrella2/SILEX/ATR42/as240051/'
+    indirimg = indir + 'img/'
+    outdir   = indir + 'ortho/'
+    if os.path.isdir(outdir):
+        shutil.rmtree(outdir)
+    os.makedirs(outdir, exist_ok=True)
+    
+    wkdir = '/tmp/paugam/orthority_wkdir/'
+    #if os.path.isdir(wkdir): shutil.rmtree(wkdir)
     os.makedirs(wkdir, exist_ok=True)
 
     imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
@@ -112,5 +116,7 @@ if __name__ == "__main__":
 
 
     orthro([*correction_xyz,*correction_opk])
+    
+    if os.path.isdir(wkdir): shutil.rmtree(wkdir)
 
 

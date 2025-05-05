@@ -6,7 +6,7 @@ import sys
 import os 
 
 indir = '/mnt/data/ATR42/as240051/'
-imgdirname = 'img_manualOrtho'
+imgdirname = 'img/'
 
 input_tiffs = sorted(glob.glob(indir+'/{:s}/*.tif'.format(imgdirname)))
 nodata_value = np.nan

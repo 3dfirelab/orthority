@@ -114,7 +114,7 @@ def residual(args, *params):
         xc, yc, zc = params[1:4]
 
     flag_plot = params[0]
-    demFile =  '{:s}/dem/dem.tif'.format(indir)
+    demFile =  '{:s}/dem/dem_srtm30.tif'.format(indir)
 
     correction_opk = np.array([o,p,k])
     correction_xyz = np.array([xc,yc,zc])
@@ -160,26 +160,27 @@ def residual(args, *params):
     #create a camera model for src_file from interior & exterior parameters
     cameras = oty.FrameCameras(intparamFile, extparamFile)
 
-    #for idimg in idimgs[:1]:
-    idimg = idimgs[0]
-    src_file =  "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimg) 
-    camera = cameras.get(src_file)
-    
-    # create Ortho object and orthorectify
-    ortho = oty.Ortho(src_file, demFile, camera=camera, crs=cameras.crs)
-    ortho.process( wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag), overwrite=True)
-    del ortho, camera
+    for idimg in idimgs:
+        #idimg = idimgs[0]
+        src_file =  "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimg) 
+        camera = cameras.get(src_file)
+        
+        # create Ortho object and orthorectify
+        ortho = oty.Ortho(src_file, demFile, camera=camera, crs=cameras.crs)
+        ortho.process( wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag), overwrite=True)
+        del ortho, camera
     del cameras
     
     
     resi = float(1.0)
-    #mem1 = psutil.virtual_memory()
-    atr = xr.open_dataset(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimgs[0],str_tag))
-    #atr2 = atr.rio.reproject(daRef.rio.crs)
-    #del atr
-    da1 = img2da4residu(rr,atr,da1Ref)
-    #da2 = img2da4residu(idimgs[1],rrh)
-    resi = float(abs((da1-da1Ref)).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
+    for idimg,da1Ref in zip(idimgs,da1Refs):
+        #mem1 = psutil.virtual_memory()
+        atr = xr.open_dataset(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag))
+        #atr2 = atr.rio.reproject(daRef.rio.crs)
+        #del atr
+        da1 = img2da4residu(rr,atr,da1Ref)
+        #da2 = img2da4residu(idimgs[1],rrh)
+        resi += float(abs((da1-da1Ref)).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
   
 
     #del da2 
@@ -199,12 +200,12 @@ def residual(args, *params):
     
     if flag_plot:
         ax = plt.subplot(111)
-        (da1-da1Ref).plot(ax=ax)
+        (da1-da1Refs[-1]).plot(ax=ax)
         #ax = plt.subplot(122)
         #(da2-da2Ref).plot(ax=ax)
         plt.figure()
         ax = plt.subplot(111)
-        (da1Ref).plot(ax=ax,alpha=.5)
+        (da1Refs[-1]).plot(ax=ax,alpha=.5)
         (da1).plot.contour(ax=ax,colors='k')
         #plt.figure()
         #ax = plt.subplot(111)
@@ -216,7 +217,8 @@ def residual(args, *params):
   
     if not(flag_plot):
         os.remove(extparamFile)
-        os.remove(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimgs[0],str_tag))
+        for idimg in idimgs:
+            os.remove(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag))
     
     del atr,da1
 
@@ -236,10 +238,10 @@ if __name__ == "__main__":
     os.makedirs(wkdir, exist_ok=True)
 
     imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
-    #imgdirname = 'img'
-    #idimgs = [93]   
-    imgdirname = 'img2'
-    idimgs = [65]   
+    imgdirname = 'img'
+    idimgs = [65,93,99]   
+    #imgdirname = 'img2'
+    #idimgs = [65]   
 
     indirimg = indir + '{:s}/'.format(imgdirname)
     flightname = 'as240051'
@@ -262,7 +264,7 @@ if __name__ == "__main__":
    
 
     rr = 3
-    da1R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-93_masked.tif')
+    da1Rs =  [xr.open_dataset(indir+'img_manualOrtho_masked/as240051_20241113_103254-{:2d}.tif'.format(idimg)) for idimg in idimgs]
     #da1R = da1R.band_data.isel(band=1)
     #da1R = da1R.drop_vars(['band'])
     #da1R = da1R.rio.reproject(27563)
@@ -275,8 +277,8 @@ if __name__ == "__main__":
     #da1Ref = da1Ref.rio.write_crs(da1R.rio.crs)
     #da1Ref = da1Ref.fillna(0)
     
-    da1Ref = img2da4residu(rr,da1R,da1R)
-    
+    da1Refs = [img2da4residu(rr,da1R,da1R) for da1R in da1Rs ]
+     
     #da1Ref.plot()
     #plt.show()
     #sys.exit()

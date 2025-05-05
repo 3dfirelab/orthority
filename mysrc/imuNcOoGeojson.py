@@ -162,8 +162,10 @@ def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, 
 
         df = None #pd.DataFrame(columns=['Photo','X','Y','Z','Yaw','Pitch','Roll'])
         
-        for frame in frames:
-            
+        for iframe, frame in enumerate(frames):
+           
+            print('imu {:.1f} %-- '.format(iframe+1/len(frames)*100), os.path.basename(frame),  end='\r' )
+
             with rasterio.open(frame.replace('_masked','')) as src:
                 # Read metadata
                 metadata = src.tags()
