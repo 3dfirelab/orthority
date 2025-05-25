@@ -41,7 +41,8 @@ def orthro(args):
     correction_xyz = np.array([x,y,z])
 
     print('process imu ...')
-    #imuNcOoGeojson.imutogeojson( indir, wkdir, imufile, indirimg, flightname, correction_xyz, correction_opk)
+    imu = xr.open_dataset(indir+imufile)    
+    imuNcOoGeojson.imutogeojson(imu, wkdir, indirimg, flightname, correction_xyz, correction_opk) 
     print('done                ') 
 
    
@@ -85,8 +86,9 @@ def orthro(args):
 ##################################
 if __name__ == "__main__":
 ##################################
-    indir = '/mnt/dataEstrella2/SILEX/ATR42/as240051/'
-    indirimg = indir + 'img/'
+    #indir = '/mnt/dataEstrella2/SILEX/ATR42/as240051/'
+    indir = '/home/paugam/Data/ATR42/as240051/'
+    indirimg = indir + 'img2/'
     outdir   = indir + 'ortho/'
     if os.path.isdir(outdir):
         shutil.rmtree(outdir)
@@ -109,10 +111,15 @@ if __name__ == "__main__":
     #correction_xyz = [ 2.42538810e-05, 2.04130933e-04,  4.58924207e-05]
     #correction_opk = [-8.88472742e-01, 5.01270986e-01, -3.32808844e-05]
      
-    correction_xyz = [-4.54166272e-05,  1.46991992e-04,  3.92582905e-04]
-    correction_opk = [ -4.62240706e-01,2.50020186e+00,  1.76677744e-04]
-    #correction_xyz = [0,0,0]
-    #correction_opk = [0,0,0]
+    #correction_xyz = [-4.54166272e-05,  1.46991992e-04,  3.92582905e-04]
+    #correction_opk = [ -4.62240706e-01,2.50020186e+00,  1.76677744e-04]
+    
+    offset = [ np.array([25,25,25]),    np.array([3.5,3.5,3.5]) ]
+    scale = [ np.array([50,50,50]), np.array([7,7,7,]) ]
+    popt = np.load('resbrute1_xycopk_minimize.npy',allow_pickle=True)
+    xc,yc,zc,o,p,k = popt.item().x 
+    correction_xyz = np.array([xc,yc,zc]) * scale[0] + offset[0]
+    correction_opk = np.array([xc,yc,zc]) * scale[1] + offset[1]
 
 
     orthro([*correction_xyz,*correction_opk])

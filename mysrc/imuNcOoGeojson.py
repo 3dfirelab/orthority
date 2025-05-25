@@ -138,118 +138,118 @@ def rpy_to_rotation_matrix(roll, pitch, yaw):
     return RZ@RY@RX
 
 #####################################
-def imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk, frames=None, str_tag=''):
+def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_opk, frames=None, str_tag=''):
   
+    if frames is None:
+        frames = sorted(glob.glob(indirimg+'*.tif'))
+
+    crs = pyproj.CRS.from_epsg(32631)
+    data_dict = {
+                "type": "FeatureCollection",
+                "world_crs":  crs.to_proj4(),
+                "features": []
+                }
+    # Define the coordinate systems
+    wgs84 = pyproj.CRS('EPSG:4326')  # WGS84 (lat/lon)
+    # Initialize the transformer
+    transformer     = pyproj.Transformer.from_crs(wgs84, crs, always_xy=True)
+    transformer_inv = pyproj.Transformer.from_crs(crs, wgs84, always_xy=True)
 
 
-    with xr.open_dataset(indir+imufile) as imu:
-        if frames is None:
-            frames = sorted(glob.glob(indirimg+'*.tif'))
-
-
-        crs = pyproj.CRS.from_epsg(32631)
-        data_dict = {
-                    "type": "FeatureCollection",
-                    "world_crs":  crs.to_proj4(),
-                    "features": []
-                    }
-        # Define the coordinate systems
-        wgs84 = pyproj.CRS('EPSG:4326')  # WGS84 (lat/lon)
-        # Initialize the transformer
-        transformer     = pyproj.Transformer.from_crs(wgs84, crs, always_xy=True)
-        transformer_inv = pyproj.Transformer.from_crs(crs, wgs84, always_xy=True)
-
-
-        df = None #pd.DataFrame(columns=['Photo','X','Y','Z','Yaw','Pitch','Roll'])
-        
-        for iframe, frame in enumerate(frames):
+    df = None #pd.DataFrame(columns=['Photo','X','Y','Z','Yaw','Pitch','Roll'])
+    
+    for iframe, frame in enumerate(frames):
+       
+        #print('imu {:.1f} %-- '.format(iframe+1/len(frames)*100), os.path.basename(frame),  end='\r' )
+        if '_masked' in frame:
+            frame_name = frame.replace('_masked','')
+        else:
+            frame_name = frame
+        with rasterio.open(frame_name) as src:
+            # Read metadata
+            metadata = src.tags()
            
-            print('imu {:.1f} %-- '.format(iframe+1/len(frames)*100), os.path.basename(frame),  end='\r' )
-
-            with rasterio.open(frame.replace('_masked','')) as src:
-                # Read metadata
-                metadata = src.tags()
-                
+            try:
                 # Check for time-related metadata (if available)
-                time = datetime.datetime.strptime(metadata.get('TIFFTAG_DATETIME', 'Time not available'),
-                                                   "%Y:%m:%d %H:%M:%S")
-                
-                idx = np.abs(imu.time-np.datetime64(time)).argmin()
-                #print(time, idx.data, end=' | ')
+                time = datetime.datetime.strptime(metadata.get('TIFFTAG_DATETIME', 'Time not available'),"%Y:%m:%d %H:%M:%S")
+            except: 
+                pdb.set_trace()
+            idx = np.abs(imu.time.values-np.datetime64(time)).argmin()
+            #print(time, (imu.time-np.datetime64(time))[idx] , idx.data, end=' | ')
 
-                #latlonZ
-                lat = float(imu.LATITUDE[idx].data)
-                lon = float(imu.LONGITUDE[idx].data)
-                alt = float(imu.ALTITUDE[idx].data)
-                #opk
+            #latlonZ
+            lat = float(imu.LATITUDE[idx].data)
+            lon = float(imu.LONGITUDE[idx].data)
+            alt = float(imu.ALTITUDE[idx].data)
+            #opk
 
-                # Example Usage
-                roll, pitch, yaw = float(imu.ROLL[idx].data), float(imu.PITCH[idx].data), float(imu.THEAD[idx].data)  # Example input angles in degrees
-                #print('------')
-                #print( roll, pitch, yaw)
-                
-                R = rpy_to_rotation_matrix(roll, pitch, yaw)
-                omega, phi, kappa = rotation_matrix_to_opk(R)
-                #print( omega, phi, kappa)
-               
-                position = phi
-                orientation = omega
-                #kinematics = (float(imu.THEAD[idx].data) - 180) % 360
-                kinematics = kappa
-                #xyz
-                Ximu, Yimu = transformer.transform(lon, lat)
-                Zimu = alt
-        
-                #correction in the arcraft referentiel
-                #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
-                #correction_opk = np.array([-1.,3.,-16]) # degree
-                
-                #apply correction 
-                xavion = -479.e-2    + correction_xyz[0]
-                yavion = 24.5e-2   + correction_xyz[1]
-                zavion = 20e-2      + correction_xyz[2]
-                opk = np.array([orientation, position, kinematics])+correction_opk
-                
-                #transformation from 
-                xyz = transform_point(xavion, yavion, zavion, Ximu, Yimu, Zimu, opk[0], opk[1], opk[2])
-      
-                lon, alt = transformer_inv.transform(*xyz[:2])
-                alt = xyz[-1]
+            # Example Usage
+            roll, pitch, yaw = float(imu.ROLL[idx].data), float(imu.PITCH[idx].data), float(imu.THEAD[idx].data)  # Example input angles in degrees
+            #print('------')
+            #print( roll, pitch, yaw)
+            
+            R = rpy_to_rotation_matrix(roll, pitch, yaw)
+            omega, phi, kappa = rotation_matrix_to_opk(R)
+            #print( omega, phi, kappa)
+           
+            position = phi
+            orientation = omega
+            #kinematics = (float(imu.THEAD[idx].data) - 180) % 360
+            kinematics = kappa
+            #xyz
+            Ximu, Yimu = transformer.transform(lon, lat)
+            Zimu = alt
+    
+            #correction in the arcraft referentiel
+            #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
+            #correction_opk = np.array([-1.,3.,-16]) # degree
+            
+            #apply correction 
+            xavion = -479.e-2    + correction_xyz[0]
+            yavion = 24.5e-2   + correction_xyz[1]
+            zavion = 20e-2      + correction_xyz[2]
+            opk = np.array([orientation, position, kinematics])+correction_opk
+            
+            #transformation from 
+            xyz = transform_point(xavion, yavion, zavion, Ximu, Yimu, Zimu, opk[0], opk[1], opk[2])
+  
+            lon, alt = transformer_inv.transform(*xyz[:2])
+            alt = xyz[-1]
 
-                #print('{:.1f}   {:.1f}  {:.1f}'.format(*xyz) + 
-                #   '   {:.1f}   {:.1f}  {:.1f}'.format(*opk ))
-                # Append a new feature to the dict
-                append_to_dict(
-                    os.path.basename(frame).split('.ti')[0],
-                    list(xyz),  # Example xyz coordinates
-                    list(3.14/180*opk),  # Example opk # conversion to radian
-                    [lon,lat,alt],  # Example xyz coordinates
-                    data_dict
-                )
-                
-                
-                #for csv file
-                new_row = {'Photo': os.path.basename(frame), 
-                           'X':lon, 
-                           'Y':lat, 
-                           'Z':alt, 
-                           'Roll':roll, 
-                           'Pitch':pitch,
-                           'Yaw': yaw,
-                           }
-                new_row_df = pd.DataFrame([new_row])
-                
-                if df is None:
-                    df = new_row_df
-                else:
-                    df = pd.concat([df, new_row_df], ignore_index=True)
-                
-        # Now, data_dict contains the added feature, and you can dump it to a JSON file
-        with open('{:s}/{:s}_ext_param{:s}.geojson'.format(outdir,flightname,str_tag), 'w') as f:
-            json.dump(data_dict, f, indent=4)
+            #print('{:.1f}   {:.1f}  {:.1f}'.format(*xyz) + 
+            #   '   {:.1f}   {:.1f}  {:.1f}'.format(*opk ))
+            # Append a new feature to the dict
+            append_to_dict(
+                os.path.basename(frame).split('.ti')[0],
+                list(xyz),  # Example xyz coordinates
+                list(3.14/180*opk),  # Example opk # conversion to radian
+                [lon,lat,alt],  # Example xyz coordinates
+                data_dict
+            )
+            
+            
+            #for csv file
+            new_row = {'Photo': os.path.basename(frame), 
+                       'X':lon, 
+                       'Y':lat, 
+                       'Z':alt, 
+                       'Roll':roll, 
+                       'Pitch':pitch,
+                       'Yaw': yaw,
+                       }
+            new_row_df = pd.DataFrame([new_row])
+            
+            if df is None:
+                df = new_row_df
+            else:
+                df = pd.concat([df, new_row_df], ignore_index=True)
+            
+    # Now, data_dict contains the added feature, and you can dump it to a JSON file
+    with open('{:s}/{:s}_ext_param{:s}.geojson'.format(outdir,flightname,str_tag), 'w') as f:
+        json.dump(data_dict, f, indent=4)
 
-        
-        df.to_csv('{:s}/{:s}_ext_param.csv'.format(outdir,flightname), index=False)
+    
+    df.to_csv('{:s}/{:s}_ext_param.csv'.format(outdir,flightname), index=False)
 
     
     return 
