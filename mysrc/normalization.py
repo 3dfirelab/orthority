@@ -1,6 +1,8 @@
 import numpy as np
 import cv2
 import xarray as xr
+import pdb 
+import matplotlib.pyplot as plt 
 
 def clahe_local_normalization(img, clip_limit=2.0, tile_grid_size=(8, 8), pmin=20, pmax=80):
     """
@@ -27,6 +29,7 @@ def clahe_local_normalization(img, clip_limit=2.0, tile_grid_size=(8, 8), pmin=2
     img_uint8 = (img_norm_filled * 255).astype(np.uint8)
 
     # Apply CLAHE
+    #print(tile_grid_size)
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
     img_eq = clahe.apply(img_uint8).astype(np.float32) / 255.0
 
@@ -71,4 +74,5 @@ def apply_clahe_dask(da: xr.DataArray, **kwargs) -> xr.DataArray:
     )
     return da_eq
 
-
+def clahe_block_numpy(img_block, **kwargs):
+    return clahe_local_normalization(img_block, **kwargs)

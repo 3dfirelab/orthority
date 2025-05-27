@@ -21,7 +21,7 @@ import gc
 import imuNcOoGeojson  
 importlib.reload(imuNcOoGeojson)
 import normalization
-
+importlib.reload(normalization)
 import numpy as np
 import xarray as xr
 import skimage
@@ -262,15 +262,41 @@ def img2da4residu(rrh, atr, da1Ref, flag_ref=False):
     da1 = xr.DataArray(result, dims=da1.dims, coords=da1.coords)
     '''
 
+    # Convert to Dask array and chunk it
+    darr = da1.chunk({'y': 512, 'x': 512}).data
+
+    # Apply map_overlap with buffer
+    darr_eq = da.map_overlap(
+        normalization.clahe_block_numpy,
+        darr,
+        depth=16,
+        boundary='reflect',
+         tile_grid_size=(17,17),   #(512+32(=depthx2))/32(=disksize) = 17 
+        dtype=np.float32
+    )
+
+    # Wrap back in xarray
+    da1 = xr.DataArray(darr_eq, dims=da1.dims, coords=da1.coords, attrs=da1.attrs)
+
+
+    '''
     da_norm = normalization.apply_clahe_dask(
         da1.chunk({'y': 512, 'x': 512}),
         clip_limit=2.0,
-        tile_grid_size=(8, 8),
+        tile_grid_size=(16, 16),
         pmin=20,
         pmax=80
     )
     da1 = da_norm.compute()
+    '''
 
+    
+    #ax = plt.subplot(111) 
+    #(da1).plot(ax=ax)
+    #(da1).plot.contour(ax=ax,colors='k')
+    #plt.show()
+    #sys.exit()
+    
     return da1
 
 #################################################
