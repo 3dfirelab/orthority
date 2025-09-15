@@ -16,12 +16,15 @@ import orthority as oty
 import importlib 
 import sys
 import gc
+import functools
+
 
 #homebrewed
 import imuNcOoGeojson  
 importlib.reload(imuNcOoGeojson)
 import normalization
 importlib.reload(normalization)
+from normalization import clahe_block_numpy
 import numpy as np
 import xarray as xr
 import skimage
@@ -39,6 +42,9 @@ from skimage.filters.rank import equalize
 from skimage.util import img_as_uint
 import warnings
 import dask.array as da
+
+
+iii = 0
 
 def local_equalize_block_numpy(arr, diskSize=30):
     mask = ~np.isnan(arr)
@@ -192,18 +198,18 @@ def img2da4residu(rrh, atr, da1Ref, flag_ref=False):
         #atr = atr.rio.reproject(daRef.rio.crs)
         
     da1 = atr.band_data.isel(band=1)
-    da1 = da1.coarsen(dim={'x': 8, 'y': 8}, boundary="trim").mean()
+    da1 = da1.coarsen(dim={'x': 2, 'y': 2}, boundary="trim").mean()
     da1 = xr.DataArray(get_gradient(da1), dims=["y", "x"], coords={"y": da1.y, "x": da1.x})
     da1 = da1.interp(x=da1Ref.x, y=da1Ref.y)
   
     if flag_ref:
-        buffer = 50
+        buffer = 100
     else:
-        buffer = 200
+        buffer = 400
 
     mask = np.where(np.isnan(da1.values), 0, 1).astype(np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_ERODE, np.ones([buffer,buffer]))
-    da1 = da1.where(mask==1)
+    #da1 = da1.where(mask==1)
 
     
     #da_mask = dagradAtr_inter.where(~dagradAtr_inter.isnull(), -9999)
@@ -261,9 +267,12 @@ def img2da4residu(rrh, atr, da1Ref, flag_ref=False):
     # Convert back to xarray
     da1 = xr.DataArray(result, dims=da1.dims, coords=da1.coords)
     '''
+    #def apply_local_clahe_2d(da: xr.DataArray, block_size=(64, 64), clip_limit=0.01) -> xr.DataArray:
+    #    result = clahe_block_numpy(da.values, block_size=block_size, clip_limit=clip_limit)
+    #    return xr.DataArray(result, coords=da.coords, dims=da.dims, attrs=da.attrs)
 
     # Convert to Dask array and chunk it
-    darr = da1.chunk({'y': 512, 'x': 512}).data
+    darr = da1.chunk({'y': da1.shape[0], 'x': da1.shape[1]}).data
 
     # Apply map_overlap with buffer
     darr_eq = da.map_overlap(
@@ -271,13 +280,12 @@ def img2da4residu(rrh, atr, da1Ref, flag_ref=False):
         darr,
         depth=16,
         boundary='reflect',
-         tile_grid_size=(17,17),   #(512+32(=depthx2))/32(=disksize) = 17 
+         tile_grid_size=(11,11),   #(512+32(=depthx2))/32(=disksize) = 17 
         dtype=np.float32
     )
-
+    
     # Wrap back in xarray
     da1 = xr.DataArray(darr_eq, dims=da1.dims, coords=da1.coords, attrs=da1.attrs)
-
 
     '''
     da_norm = normalization.apply_clahe_dask(
@@ -295,13 +303,21 @@ def img2da4residu(rrh, atr, da1Ref, flag_ref=False):
     #(da1).plot(ax=ax)
     #(da1).plot.contour(ax=ax,colors='k')
     #plt.show()
-    #sys.exit()
+    #pdb.set_trace() 
     
     return da1
 
 #################################################
 def residual(args, *params):
-   
+    
+    if len(params)==1: 
+        params= params[0]
+    flag_plot = params[1]
+    global iii
+    if (iii) % 50 == 0: flag_plot = True
+
+    flag_resi = params[5]
+
     #mem0 = psutil.virtual_memory()
     #rrh = 3
     if len(params) == 1: 
@@ -309,7 +325,7 @@ def residual(args, *params):
 
     if params[2] == 'opk':
         o, p, k = args[:]
-        xc, yc, zc = params[3:]
+        xc, yc, zc = params[4]
     if params[2] == 'xyz':
         xc, yc, zc = args[:]
         o, p, k = params[3:]
@@ -317,9 +333,6 @@ def residual(args, *params):
         o, p, k   = args[3:]
         xc, yc, zc = args[:3]
     
-    flag_plot = params[1]
-    demFile =  '{:s}/dem/dem_srtm30.tif'.format(indir)
-
     offset = np.array(params[0]['offset'])
     scale = np.array(params[0]['scale'])
 
@@ -329,10 +342,11 @@ def residual(args, *params):
     #atr
     #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
     #correction_opk = np.array([0.,3.,-16]) # degree
-    src_files = ["/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimg) for idimg in idimgs] 
+    #src_files = [f"/{indir}/{imgdirname}/{flightname}_{flightdate}_{startdate}-{idimg}.tif" for idimg in idimgs] 
+    src_files = [f"/{indir}/{imgdirname}/f1-{idimg:09d}.png" for idimg in idimgs] 
 
     str_tag = '_{:.1f}{:.1f}{:.1f}_{:.1f}{:.1f}{:.1f}'.format(*correction_xyz,*correction_opk).replace('.','p')
-    imuNcOoGeojson.imutogeojson( params[-1], wkdir, indirimg, flightname, correction_xyz, correction_opk, src_files,str_tag=str_tag)
+    imuNcOoGeojson.imutogeojson( params[3], wkdir, indirimg, flightname, correction_xyz, correction_opk, src_files,str_tag=str_tag)
 
     #for idimg in idimgs:
     #    if os.path.isfile(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimg)):
@@ -364,7 +378,7 @@ def residual(args, *params):
     #     print(f"Zombie Process Found: PID={proc.info['pid']}, Name={proc.info['name']}")
 
             
-    extparamFile =  "{:s}/as240051_ext_param{:s}.geojson".format(wkdir,str_tag)
+    extparamFile =  "{:s}/{:s}_ext_param{:s}.geojson".format(wkdir,flightname,str_tag)
     #create a camera model for src_file from interior & exterior parameters
     cameras = oty.FrameCameras(intparamFile, extparamFile)
 
@@ -374,74 +388,91 @@ def residual(args, *params):
         
         # create Ortho object and orthorectify
         ortho = oty.Ortho(src_file, demFile, camera=camera, crs=cameras.crs)
-        ortho.process( wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag), overwrite=True)
+        ortho.process( f"{wkdir}/{flightname}_{flightdate}_{startdate}-{idimg}_ORTHO{str_tag}.tif", overwrite=True)
         del ortho, camera
     del cameras
     
     da1_res = [] 
     resi = float(0.0)
-    penalty_factor = 10
-    for idimg,da1Ref in zip(idimgs,da1Refs):
+    penalty_factor = 1.
+    atr_arr = []
+    for idimg in idimgs:
         #mem1 = psutil.virtual_memory()
-        atr = xr.open_dataset(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag))
+        #atr = xr.open_dataset(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag))
+        atr = xr.open_dataset(f"{wkdir}/{flightname}_{flightdate}_{startdate}-{idimg}_ORTHO{str_tag}.tif")
         #atr2 = atr.rio.reproject(daRef.rio.crs)
         #del atr
-        da1 = img2da4residu(rr,atr,da1Ref)
+        #da1 = img2da4residu(rr,atr,da1Ref)
         #da2 = img2da4residu(idimgs[1],rrh)
         
+        atr_arr.append( atr )
+
+
         #get a metric to penalize when da1 non nan are outsie da1Ref value
 
-        #resi += float(abs((da1-da1Ref)).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
-       
-        overlap_mask = (da1Ref > 0)  # or any valid domain definition
-        resi += float(abs((da1 - da1Ref)).where(overlap_mask,0.0).sum())
+    diffs = []
+    resi = 0
+    from itertools import combinations
+    for da1, da2 in zip(atr_arr[:-1], atr_arr[1:]): # combinations(atr_arr, 2):
+        #da2_on_da1 = da2.interp(x=da1.x, y=da1.y, method="linear")
+        #da1r, da2r = xr.align(da1.band_data.isel(band=1), da2_on_da1.band_data.isel(band=1), join="inner")  # keep only overlap
+        #if da1r.sizes['x'] * da1r.sizes['y'] == 0 : continue
+        #diffs.append(abs(da1r - da2r))
+
+        # 1) Select the band and normalize axis order/orientation
+        a = da1.band_data.isel(band=1).sortby("x").sortby("y")
+        b = da2.band_data.isel(band=1).sortby("x").sortby("y")
+
+        # 2) Put b on a's grid (same coords). Use "linear" for continuous fields, "nearest" for categorical.
+        b_on_a = b.interp(x=a.x, y=a.y, method="linear")
+
+
+        # 3) Valid overlap where both have finite data
+        valid = np.isfinite(a) & np.isfinite(b_on_a)
+
+        # 4) Sum and mean absolute differences over the overlap
+        diff = (a - b_on_a).where(valid)
+        total_abs_diff = np.abs(diff).sum().item()
+        overlap_size = valid.sum().item()
+
+        if overlap_size > 0:
+            mean_abs_diff = total_abs_diff / overlap_size
+        else:
+            mean_abs_diff = np.nan
+
+        resi += mean_abs_diff
+        diffs.append(diff)  
+
         
-        resi += float(np.abs(da1.where(~overlap_mask,0.0).sum())) * penalty_factor
-    
+    #resi_da = xr.concat(diffs, dim="pairs")
+    #resi = resi_da.sum(dim=("pairs", "x", "y")).values
 
-        if flag_plot:
-            da1_res.append(da1)
-
-    #del da2 
-    #gc.collect()
-    #mem2 = psutil.virtual_memory()
-    #print(mem2.used/mem1.used)
-    
-    mem = psutil.virtual_memory()
-    print('{:.2f},{:.2f},{:.2f}  {:.2f},{:.2f},{:.2f} | {:.1f} || {:.1f} '.format(*correction_xyz,*correction_opk, resi, mem.used/(1024 ** 3)))
-    
-    '''snapshot = tracemalloc.take_snapshot()
-    top_stats = snapshot.statistics('lineno')
-
-    for stat in top_stats[:3]:
-        print(stat)
-    '''
-    
     if flag_plot:
-        for da1,da1Ref in zip(da1_res, da1Refs):
-            fig = plt.figure()
-            ax = plt.subplot(121)
-            (da1-da1Ref).plot(ax=ax)
-            #ax = plt.subplot(122)
-            #(da2-da2Ref).plot(ax=ax)
-            ax = plt.subplot(122)
-            (da1Ref).plot(ax=ax,alpha=.5)
-            (da1).plot.contour(ax=ax,colors='k')
-            #plt.figure()
-            #ax = plt.subplot(111)
-            #(da2Ref).plot(ax=ax,alpha=.5)
-            #(da2).plot.contour(ax=ax,colors='k')
-
+        print(correction_xyz)
+        print(correction_opk)
+        fig = plt.figure()
+        ax = plt.subplot(211)
+        alpha = 1 
+        for ida, da1 in enumerate(atr_arr): # combinations(atr_arr, 2):
+            if ida>0: alpha=0.9
+            da1.band_data.isel(band=1).plot(ax=ax, add_colorbar=False,alpha=alpha) 
+        ax = plt.subplot(212)
+        for da_slice in diffs: #(resi_da.sizes["pairs"]):
+            (da_slice).plot(ax=ax, add_colorbar=False, vmax=20, vmin=-20)
+        
         plt.show()
         pdb.set_trace()
   
     if not(flag_plot):
         os.remove(extparamFile)
         for idimg in idimgs:
-            os.remove(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag))
+            os.remove(wkdir+f'{flightname}_{flightdate}_{startdate}-{idimg}_ORTHO{str_tag}.tif')
     
-    del atr,da1
+    #del atr,da1
+    iii += 1
+    flag_plot = False
 
+    print(f"{o:2.6f}, {p:2.6f}, {k:2.6f}, |  {float(resi)}")
     return float(resi)
 
 
@@ -452,29 +483,36 @@ if __name__ == "__main__":
     tracemalloc.start()
     
 
-    indir = '/home/paugam/Data/ATR42/as240051/'
+    #indir = '/home/paugam/Data/ATR42/as250018/visible/bas/'
+    #indir = '/home/paugam/Data/ATR42/as250018/imgRef/'
+    indir = '/home/paugam/Data/ATR42/as250018/imgRef/'
     outdir = indir + 'io/'
-    wkdir = '/tmp/orthority2/'
+    wkdir = '/tmp/orthority3/'
     os.makedirs(wkdir, exist_ok=True)
 
-    imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
-    imgdirname = 'img'
-    idimgs = [65,93,99]   
+    #imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
+    imufile = '../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_CORE_NAV_200HZ_20250710_as250018_L1_V1_smooth.nc'
+    imgdirname = 'png_f1/'
+    #idimgs = [0]   
+    idimgs = [2,3,4,5]#,3,4]#,5,6,7]   
     #imgdirname = 'img2'
     #idimgs = [65]   
+    demFile =  '{:s}/../dem/dem_as250018.tif'.format(indir)
 
     indirimg = indir + '{:s}/'.format(imgdirname)
-    flightname = 'as240051'
+    flightname = 'as250018'
+    flightdate = '20250710'
+    startdate = '071751'
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")         
 
-    intparamFile = "{:s}/io/as240051_int_param.yaml".format(indir)
+    intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
 
     #sentinel
     #s2 = xr.open_dataset(indir+'sentinel_background_test_cropped_{:s}.tif'.format(imgdirname))
     #gradS2 = get_gradient(s2.band_data.isel(band=1))
     #dagradS2 = xr.DataArray(gradS2, dims=["y", "x"], coords={"y": s2.y, "x": s2.x})
 
-    rr = 3
+    #rr = 3
     #dagradS2 = dagradS2/1000.
     #dagradS2 = dagradS2.where(dagradS2<1,1)
     #daRef = dagradS2
@@ -484,7 +522,7 @@ if __name__ == "__main__":
    
 
     rr = 3
-    da1Rs =  [xr.open_dataset(indir+'img_masked_manualOrtho/as240051_20241113_103254-{:2d}_manualOrtho.tif'.format(idimg)) for idimg in idimgs]
+    da1Rs =  [xr.open_dataset(f"{indir}/ortho/f1-{idimg:09d}_ORTHO.tif").rio.reproject(32631) for idimg in idimgs]
     #da1R = da1R.band_data.isel(band=1)
     #da1R = da1R.drop_vars(['band'])
     #da1R = da1R.rio.reproject(27563)
@@ -499,9 +537,9 @@ if __name__ == "__main__":
     
     da1Refs = [img2da4residu(rr,da1R,da1R,flag_ref=True) for da1R in da1Rs ]
      
-    #da1Ref.plot()
+    #da1Refs[0].plot()
     #plt.show()
-    #sys.exit()
+    #sys.exit()failed
 
     ''' 
     da2R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-99.tif')
@@ -514,23 +552,28 @@ if __name__ == "__main__":
     da2Ret = da2Ref.rio.write_crs(da2R.rio.crs)
     da2Ref = da2Ref.fillna(1)
     '''
-    offset = [ np.array([25,25,25]),    np.array([3.5,3.5,3.5]) ]
-    scale = [ np.array([50,50,50]), np.array([7,7,7,]) ]
+    #loc camera to central 479cm, 24.5 cm et -20c
+
+    offset = [ np.array([.5,.5,.5]),    np.array([5,5,5]) ]
+    scale = [ np.array([1,1,1]), np.array([10,10,10,]) ]
+    #offset = [ np.array([.5,.5,.5]),    np.array([2,2,2]) ]
+    #scale = [ np.array([1,1,1]), np.array([4,4,4,]) ]
 
     imu = xr.open_dataset(indir+imufile)
-    
+     
 
-    if True: 
+    if False: 
         #popt = np.array([ -0.93871095,  -1.06893665,  -1.03742455,  -1.56363453, 2.64046062, -15.92574779])
         #popt = np.array([-0.96509656,  -1.02242933,  -1.02461382,  -1.54239457, 2.6027513 , -15.99057932])
         #popt = np.array([0.,0.,0.,0., 2.,0 ])
-        popt = np.load('resbrute1_xycopk_minimize.npy',allow_pickle=True)
+        popt = np.load('resbrute1_xycopk_minimize2.npy',allow_pickle=True).item().x
         #xc,yc,zc,o,p,k = popt.item().x
         #correction_opk = (np.array([o,p,k])-offset[1])    / scale[1]
         #correction_xyz = (np.array([xc,yc,zc])-offset[0]) / scale[0]
         #popt = [*correction_xyz, *correction_xyz]
-        params = [ {'offset':offset,'scale':scale}, True,'xyzopk', imu]
-        residual( popt.item().x , params)
+        params = [ {'offset':offset,'scale':scale}, True,'opk', imu, [0.5,0.5,0.5] , 'resi2']
+        residual( popt , params )
+        #residual( popt.item().x , params)
         sys.exit()
     '''
     rranges = (slice(-2,2,1), slice(-2,2,1), commentslice(-2,2,1), 
@@ -549,18 +592,93 @@ if __name__ == "__main__":
     print(resbrute1)
     xc,yc,zc,oc,pc,kc = resbrute1
     '''
-    xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5, 0.5,0.5,0.5
+    #xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.35,0.7,0.5
+
     
-    resbrutef =  [xc,yc,zc] + [oc,pc,kc]
+    import cma
+    import numpy as np
+    from scipy.optimize import minimize  # optional polish
+
+# --- build the same params tuple you already pass to `residual` ---
+    params = [ {'offset':offset,'scale':scale}, False, 'opk', imu, [0.5,0.5,0.5], 'resi1' ]
+
+# We optimize u = [o,p,k] in the latent [0,1]^3 space (as your residual expects).
+    def f_latent(u):
+        WARN_MSG = r".*You will likely lose important projection information when converting to a PROJ string.*"
+        import warnings
+        warnings.filterwarnings(
+            "ignore",
+            category=UserWarning,
+            message=WARN_MSG,
+            module=r"pyproj\.crs\.crs",
+        )
+        u = np.asarray(u, dtype=float)
+        # (Optional) clamp just in case; CMA-ES should respect bounds though
+        u = np.clip(u, 0.0, 1.0)
+        return float(residual(u, *params))
+
+# Initial guess and step size (fraction of the box)
+    x0      = [0.5, 0.5, 0.5]   # your current starting point
+    sigma0  = 0.5               # ~20% of the box; enlarge if you want broader exploration
+
+# CMA-ES options: box bounds [0,1]^3, popsize controls exploration
+    opts = {
+        'bounds': [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+        'popsize': 32,        # try 8–32; larger = more global, slower per iteration
+        'seed': 54,
+        'maxiter': 2000,       # or use 'maxfevals': e.g. 2000
+        'verb_disp': 1,
+    }
+
+# --- Simple API with restarts (covers larger latent space) ---
+    best_u, es = cma.fmin2(f_latent, x0, sigma0, options=opts,
+                           restarts=6, incpopsize=2)  # restarts broaden search
+    print("CMA-ES best latent [o,p,k]:", best_u)
+    
+#    from joblib import Parallel, delayed
+#
+#    es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
+#    while not es.stop():
+#        U = es.ask()
+#        # parallel evaluation of the whole population
+#        F = Parallel(n_jobs=-1, prefer='processes')(
+#                delayed(f_latent)(u) for u in U
+#            )
+#        es.tell(U, F)
+#        es.disp()
+
+#    best_u = es.result.xbest
+#    print("CMA-ES best latent [o,p,k]:", best_u)
+
+# Optional: local polish with Nelder–Mead (still in latent space)
+    res_nm = minimize(f_latent, best_u, method='Nelder-Mead',
+                      options={'xatol': 0.01, 'fatol': 0.1, 'maxiter': 300, 'disp': True})
+    final_u = res_nm.x
+    print("Final latent [o,p,k]:", final_u)
+
+# If you want the physical angle corrections (degrees), apply your mapping explicitly:
+    phys = (np.array(final_u) * scale[1]) - offset[1]
+    print("Final physical [o,p,k] degrees:", phys)
+
+
+
+
+    sys.exit()
+    
+
+    xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.5,0.5,0.5
+    
+    #resbrutef =  [xc,yc,zc] + [oc,pc,kc]
+    resbrutef =  [oc,pc,kc]
     
     from scipy.optimize import minimize
-    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu]
+    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi1' ]
 
     # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
     x0 = np.array(resbrutef)  # assuming resbrutef is a list or array of length 6
 
     # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.1  # Increase this if your function is too flat at the start
+    step_size = 0.9  # Increase this if your function is too flat at the start
     n = len(x0)
     initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
 
@@ -572,22 +690,61 @@ if __name__ == "__main__":
         method='Nelder-Mead',
         options={
             'initial_simplex': initial_simplex,
-            'xtol': 0.1,
-            'ftol': 0.1,
+            'xatol': 0.01,
+            'fatol': 0.1,
             'disp': True,
             'maxiter': 1000  # optional: increase if needed
         }
     )
-    np.save('resbrute1_xycopk_minimize.npy',result)
+    np.save('resbrute1_xycopk_minimize1.npy',result)
+
+
+    popt = result.x
+    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi2' ]
+
+    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
+    x0 = np.array(popt)  # assuming resbrutef is a list or array of length 6
+
+    # Construct an initial simplex: one vertex is x0, others are small perturbations
+    step_size = 0.05  # Increase this if your function is too flat at the start
+    n = len(x0)
+    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
+
+
+
+
+
+
+    # Perform optimization using Nelder-Mead with the custom simplex
+    result = minimize(
+        fun=residual,
+        x0=x0,
+        args=tuple(params),  # your additional parameters to residual()
+        method='Nelder-Mead',
+        options={
+            'initial_simplex': initial_simplex,
+            'xatol': 0.01,
+            'fatol': 0.1,
+            'disp': True,
+            'maxiter': 1000  # optional: increase if needed
+        }
+    )
+
+    np.save('resbrute1_xycopk_minimize2.npy',result)
     sys.exit()
+
 
 # Resulting optimal parameters
     popt = result.x
 
     print('start last opt')
-    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu]
-    popt = optimize.fmin(residual, tuple(resbrutef), args=tuple(params), xtol=0.01, ftol=0.01, disp=False)
+    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0,0,0]]
+    popt2 = optimize.fmin(residual, tuple(popt), args=tuple(params), xtol=0.01, ftol=0.01, disp=False)
+    np.save('resbrute2_xycopk_minimize.npy',popt2)
     sys.exit()
+
+
+
 
     print('start opk opt')
     rranges = (slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7))
@@ -625,7 +782,7 @@ if __name__ == "__main__":
 
     print('start last opt')
     params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu]
-    popt = optimize.fmin(residual, tuple(resbrutef), args=tuple(params), xtol=0.1, ftol=1.e0, disp=False)
+    popt = optimize.fmin(residual, tuple(resbrutef), args=tuple(params), xtol=0.1, ftol=0.1, disp=False)
 
     np.save('resbrute22.npy',popt)
     print(popt)

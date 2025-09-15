@@ -139,7 +139,7 @@ def rpy_to_rotation_matrix(roll, pitch, yaw):
 
 #####################################
 def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_opk, frames=None, str_tag=''):
-  
+ 
     if frames is None:
         frames = sorted(glob.glob(indirimg+'*.tif'))
 
@@ -157,35 +157,84 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
 
 
     df = None #pd.DataFrame(columns=['Photo','X','Y','Z','Yaw','Pitch','Roll'])
-    
+   
     for iframe, frame in enumerate(frames):
+    
+        #if '52' in frame:
+        #    print(flightname, correction_xyz, correction_opk)
+
        
         #print('imu {:.1f} %-- '.format(iframe+1/len(frames)*100), os.path.basename(frame),  end='\r' )
-        if '_masked' in frame:
-            frame_name = frame.replace('_masked','')
+        if '_corrected_masked' in frame:
+            frame_name = frame.replace('_corrected_masked','')
         else:
             frame_name = frame
         with rasterio.open(frame_name) as src:
             # Read metadata
             metadata = src.tags()
-           
-            try:
-                # Check for time-related metadata (if available)
-                time = datetime.datetime.strptime(metadata.get('TIFFTAG_DATETIME', 'Time not available'),"%Y:%m:%d %H:%M:%S")
-            except: 
-                pdb.set_trace()
+          
+            if '.png' in frame:
+                try:
+                    # Check for time-related metadata (if available)
+                    time = datetime.datetime.strptime(metadata.get('TIFFTAG_DATETIME', 'Time not available'),"%y%m%d %H%M%S%f")
+                except: 
+                    time = datetime.datetime.strptime(metadata.get('Time', 'Time not available'),"%Y-%m-%d %H:%M:%S.%f")
+
+            elif '.tif' in frame: 
+                desc = metadata.get("TIFFTAG_IMAGEDESCRIPTION")
+                if desc:
+                    meta = json.loads(desc)  # convert to dict
+                    time_str = meta.get("Time")
+                    if time_str:
+                        time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S.%f")
+            '''
             idx = np.abs(imu.time.values-np.datetime64(time)).argmin()
-            #print(time, (imu.time-np.datetime64(time))[idx] , idx.data, end=' | ')
-
             #latlonZ
-            lat = float(imu.LATITUDE[idx].data)
-            lon = float(imu.LONGITUDE[idx].data)
-            alt = float(imu.ALTITUDE[idx].data)
+            latmm = float(imu.LATITUDE[idx].data)
+            lonmm = float(imu.LONGITUDE[idx].data)
+            altmm = float(imu.ALTITUDE[idx].data)
             #opk
+            rollmm, pitchmm, yawmm = float(imu.ROLL[idx].data), float(imu.PITCH[idx].data), float(imu.THEAD[idx].data)  # Example input angles in degrees
+            
+            '''
+            #linear interpolation
+            idx_after = np.searchsorted(imu.time.values, np.datetime64(time), side='right')
+            idx_before = idx_after - 1
 
-            # Example Usage
-            roll, pitch, yaw = float(imu.ROLL[idx].data), float(imu.PITCH[idx].data), float(imu.THEAD[idx].data)  # Example input angles in degrees
-            #print('------')
+            # Check bounds
+            if idx_before < 0 or idx_after >= len(imu.time.values):
+                raise ValueError("Time is out of bounds for interpolation.")
+
+            # Get times
+            t0 = imu.time.values[idx_before]
+            t1 = imu.time.values[idx_after]
+            t  = np.datetime64(time)
+
+            # Convert times to float seconds (or any consistent unit)
+            t0_s = float( (t0 - t0) / np.timedelta64(1, 's'))
+            t1_s = float( (t1 - t0) / np.timedelta64(1, 's'))
+            t_s  = float( (t  - t0) / np.timedelta64(1, 's'))
+
+            def interp_val(varName, t0_s, t1_s, t_s ):
+                var0 = float(imu[varName][idx_before].data)
+                var1 = float(imu[varName][idx_after].data)
+                var_interp = (var1-var0)/(t1_s-t0_s) * (t_s-t0_s) + var0
+                return float(var_interp)
+
+            lat = interp_val('LATITUDE', t0_s, t1_s, t_s )
+            lon = interp_val('LONGITUDE', t0_s, t1_s, t_s )
+            alt = interp_val('ALTITUDE', t0_s, t1_s, t_s )
+            roll = interp_val('ROLL_smooth', t0_s, t1_s, t_s )
+            pitch = interp_val('PITCH_smooth', t0_s, t1_s, t_s)
+            yaw = interp_val('THEAD_smooth', t0_s, t1_s, t_s)
+            #roll = interp_val('ROLL', t0_s, t1_s, t_s )
+            #pitch = interp_val('PITCH', t0_s, t1_s, t_s)
+            #yaw = interp_val('THEAD', t0_s, t1_s, t_s)
+
+            #print('------ delta t:', float(t  - t0)*1.e-9 )
+            #print('------ delta t:', float(t  - t1)*1.e-9 )
+            #print('------  t:',t )
+            #print( lat, lon, alt)
             #print( roll, pitch, yaw)
             
             R = rpy_to_rotation_matrix(roll, pitch, yaw)
@@ -212,7 +261,7 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
             
             #transformation from 
             xyz = transform_point(xavion, yavion, zavion, Ximu, Yimu, Zimu, opk[0], opk[1], opk[2])
-  
+ 
             lon, alt = transformer_inv.transform(*xyz[:2])
             alt = xyz[-1]
 

@@ -20,13 +20,11 @@ from rasterio.enums import Resampling
 from osgeo import gdal
 import subprocess
 import rasterio
-from orthority.ortho import OrthorityWarning
 
 #homebrewed
 import imuNcOoGeojson 
 importlib.reload(imuNcOoGeojson)
-import optimizeAlignement_telops_function 
-importlib.reload(optimizeAlignement_telops_function)
+
 
 #################################################
 def get_gradient(im) :
@@ -51,6 +49,10 @@ def orthro(args):
     correction_xyz = np.array([x,y,z])
     src_files =  sorted(glob.glob(f"{indirimg}/f1*.tif" ))
 
+    print('process imu ...')
+    imu = xr.open_dataset(indir+imufile)    
+    imuNcOoGeojson.imutogeojson(imu, wkdir, indirimg, flightname, correction_xyz, correction_opk, src_files) 
+    print('done                ') 
 
    
     '''
@@ -68,32 +70,16 @@ def orthro(args):
     result = subprocess.run(command, capture_output=True, text=True)
     '''
     
-    imu = xr.open_dataset(indir+imufile)
+    str_tag = ''
+    extparamFile =  f"{wkdir}/{flightname}_ext_param{str_tag}.geojson".format(wkdir,str_tag)
+    #create a camera model for src_file from interior & exterior parameters
+    cameras = oty.FrameCameras(intparamFile, extparamFile)
+
     #for idimg in idimgs[:1]:
     src_files =  sorted(glob.glob(f"{indirimg}/f1*.tif" ))
     
     for src_file in src_files:
-        if os.path.isfile(outdir+os.path.basename(src_file).replace('.tif','_ORTHO.tif')): continue
         print(os.path.basename(src_file))
-        base = os.path.basename(src_file)       # "f1-000000001.tif"
-        id_str = base.replace("f1-", "").replace(".tif", "")
-        frame_id = int(id_str)    
-    
-        if frame_id > 1:
-            correction_opk_ = optimizeAlignement_telops_function.opti_correction_opk(flightname, flightdate, transectname, indir, imufile, [frame_id], demFile).x
-            correction_opk  = ( correction_opk_ * scale[1]) - offset[1]
-        print(correction_opk)
-        print(src_file)
-        print('process imu ...')
-        imu = xr.open_dataset(indir+imufile)    
-        imuNcOoGeojson.imutogeojson(imu, wkdir, indirimg, flightname, correction_xyz, correction_opk, [src_file]) 
-        print('done                ') 
-
-        str_tag = ''
-        extparamFile =  f"{wkdir}/{flightname}_ext_param{str_tag}.geojson".format(wkdir,str_tag)
-        #create a camera model for src_file from interior & exterior parameters
-        cameras = oty.FrameCameras(intparamFile, extparamFile)
-
         camera = cameras.get(src_file)
         # create Ortho object and orthorectify
         ortho = oty.Ortho(src_file, demFile, camera=camera, crs=cameras.crs)
@@ -184,8 +170,8 @@ if __name__ == "__main__":
     
     indirimg = indir + 'tif_f1/'
     outdir   = indir + 'ortho/'
-    #if os.path.isdir(outdir):
-    #    shutil.rmtree(outdir)
+    if os.path.isdir(outdir):
+        shutil.rmtree(outdir)
     os.makedirs(outdir, exist_ok=True)
     
     wkdir = '/tmp/paugam/orthority_wkdir/'
@@ -197,11 +183,8 @@ if __name__ == "__main__":
     
     #flightname = 'as250018'
     flightname = 'as250026'
-    flightdate = '20250726'
     
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")
-    warnings.filterwarnings("ignore", category=OrthorityWarning)  # show once per message
-
     #demFile =  '{:s}/../dem/dem_as250018.tif'.format(indir)
     demFile =  '{:s}/../dem/as250026_dem_1m.tif'.format(indir)
     #demFile =  '{:s}/../dem/as250018_dem_1m.tif'.format(indir)
@@ -226,7 +209,7 @@ if __name__ == "__main__":
     #xc,yc,zc,o,p,k = popt.item().x 
     #popt = np.load('resbrute1_xycopk_minimize.npy',allow_pickle=True)
     #xc,yc,zc,o,p,k = [0,0,0,0,0,0] #popt.item().x 
-    oc,pc,kc = np.load(f'resbrute1_xycopk_minimize2_{transectname}_1.npy',allow_pickle=True).item().x 
+    oc,pc,kc = np.load(f'resbrute1_xycopk_minimize2_{transectname}.npy',allow_pickle=True).item().x 
     
     #xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.5,0.5,0.5
     xc,yc,zc = 0.5,0.5,0.5

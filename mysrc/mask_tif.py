@@ -6,14 +6,16 @@ import sys
 import os 
 import pdb 
 from affine import Affine
+import cv2 
 
-indir = '/home/paugam/Data/ATR42/as240051/'
-imgdirname = 'img'
+indir = '/home/paugam/Data/ATR42/as250018/visible/bas'
+mtx, dist = np.load(indir + '/../../../CameraCalib/ATRvis_72mm_cameraMatrix_DistortionCoeff.npy', allow_pickle=True)
+imgdirname = 'img200'
 
 input_tiffs = sorted(glob.glob(indir+'/{:s}/*.tif'.format(imgdirname)))
 nodata_value = np.nan
 
-os.makedirs(indir+'{:s}_masked'.format(imgdirname), exist_ok=True)
+os.makedirs(indir+'/{:s}_corrected_masked'.format(imgdirname), exist_ok=True)
 
 for input_tiff in input_tiffs:
     print(input_tiff)
@@ -23,7 +25,11 @@ for input_tiff in input_tiffs:
 
         # Apply a mask to all bands
         data[:,:32,:252] = nodata_value
-
+       
+        data = np.transpose(data, (1, 2, 0)) 
+        undistorted_data = cv2.undistort(data, mtx, dist, None, mtx)
+        undistorted_data =  np.transpose(undistorted_data, (2, 0, 1))
+        data =  np.transpose(data, (2, 0, 1))
     
         # Update the transform to reflect vertical flip
         height = src.height
@@ -34,9 +40,13 @@ for input_tiff in input_tiffs:
         profile.update(transform=new_transform)
         profile.update(nodata=nodata_value, dtype=rasterio.float32)
 
-    output_tiff = input_tiff.replace('/{:s}'.format(imgdirname),'/{:s}_masked/'.format(imgdirname))
+    output_tiff = input_tiff.replace('/{:s}'.format(imgdirname),'/{:s}_corrected_masked/'.format(imgdirname))
     # Write the modified raster
     with rasterio.open(output_tiff, "w", **profile) as dst:
-        dst.write(data)
+        dst.write(undistorted_data)
     
+    #output_tiff = input_tiff.replace('/{:s}'.format(imgdirname),'/{:s}_masked/'.format(imgdirname))
+    ## Write the modified raster
+    #with rasterio.open(output_tiff, "w", **profile) as dst:
+    #    dst.write(data)
 
