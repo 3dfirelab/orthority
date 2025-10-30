@@ -165,7 +165,7 @@ if __name__ == "__main__":
     #indir = '/mnt/dataEstrella2/SILEX/ATR42/as240051/'
     #indir = '/home/paugam/Data/ATR42/as250018/visible/bas/'
     #indir = '/home/paugam/Data/ATR42/as250018/imgRef/'
-    transectname = 'Sijean06'
+    transectname = 'Sijean10'
     indir = f'/home/paugam/Data/ATR42/as250026/{transectname}/'
     
     indirimg = indir + 'tif_f1/'

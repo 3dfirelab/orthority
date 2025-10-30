@@ -481,7 +481,7 @@ def opti_correction_opk(flightname, flightdate, transectname, indir, imufile, id
 
     rr = 3
     da1Rs = []
-    for idimg_ in [1,5,10]:
+    for idimg_ in [1,2,4,6,8,10]:
         if os.path.isfile(f"{indir}/ortho/f1-{idimgs[0]-idimg_:09d}_ORTHO.tif") :
             da1Rs.append(xr.open_dataset(f"{indir}/ortho/f1-{idimgs[0]-idimg_:09d}_ORTHO.tif").rio.reproject(32631) )
     

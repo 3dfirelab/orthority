@@ -1,3 +1,6 @@
+'''
+not working
+'''
 import os
 import sys
 import glob
@@ -193,6 +196,7 @@ atr_to_bd = atr.rio.reproject_match(bd_clip_1m, resampling=resampling)
 
 rr=3
 da1 = img2da4residu(rr,atr_to_bd,bd_clip_1m)
+da1Ref = img2da4residu(rr,bd_clip_1m,bd_clip_1m)
 
 
 

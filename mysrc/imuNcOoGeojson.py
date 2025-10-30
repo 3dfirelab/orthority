@@ -186,7 +186,11 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
                     meta = json.loads(desc)  # convert to dict
                     time_str = meta.get("Time")
                     if time_str:
-                        time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S.%f")
+                        try:
+                            time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S.%f")
+                        except:
+                            time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S")
+
             '''
             idx = np.abs(imu.time.values-np.datetime64(time)).argmin()
             #latlonZ

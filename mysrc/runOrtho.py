@@ -79,9 +79,9 @@ def orthro(args):
         id_str = base.replace("f1-", "").replace(".tif", "")
         frame_id = int(id_str)    
     
-        if frame_id > 1:
-            correction_opk_ = optimizeAlignement_telops_function.opti_correction_opk(flightname, flightdate, transectname, indir, imufile, [frame_id], demFile).x
-            correction_opk  = ( correction_opk_ * scale[1]) - offset[1]
+        #if frame_id > 380:
+        #    correction_opk_ = optimizeAlignement_telops_function.opti_correction_opk(flightname, flightdate, transectname, indir, imufile, [frame_id], demFile).x
+        #    correction_opk  = ( correction_opk_ * scale[1]) - offset[1]
         print(correction_opk)
         print(src_file)
         print('process imu ...')
@@ -179,7 +179,8 @@ if __name__ == "__main__":
     #indir = '/mnt/dataEstrella2/SILEX/ATR42/as240051/'
     #indir = '/home/paugam/Data/ATR42/as250018/visible/bas/'
     #indir = '/home/paugam/Data/ATR42/as250018/imgRef/'
-    transectname = 'Sijean06'
+    #transectname = 'Sijean06_short'
+    transectname = 'Sijean10'
     indir = f'/home/paugam/Data/ATR42/as250026/{transectname}/'
     
     indirimg = indir + 'tif_f1/'
