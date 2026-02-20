@@ -12,7 +12,8 @@ import shutil
 import importlib
 import orthority as oty
 import glob 
-
+import tifffile
+import json 
 from pathlib import Path
 import tempfile
 import rioxarray  # ensures .rio accessor is registered
@@ -21,12 +22,15 @@ from osgeo import gdal
 import subprocess
 import rasterio
 from orthority.ortho import OrthorityWarning
+import pandas as pd 
+
 
 #homebrewed
 import imuNcOoGeojson 
-importlib.reload(imuNcOoGeojson)
-import optimizeAlignement_telops_function 
-importlib.reload(optimizeAlignement_telops_function)
+#import optimizeAlignement_telops_function 
+#importlib.reload(optimizeAlignement_telops_function)
+import optimizeAlignement_telops_f1
+
 
 #################################################
 def get_gradient(im) :
@@ -41,15 +45,65 @@ def get_gradient(im) :
     mag, angle = cv2.cartToPolar(grad_x,grad_y)
     return grad, mag, angle
 
+
+#########################################
+def radiance_um_to_wavenumber(lambda_um, L_lambda):
+    """
+    Convert spectral radiance from per micrometre to per wavenumber.
+
+    Parameters:
+    ----------
+    lambda_um : float or np.ndarray
+        Wavelength(s) in micrometres (μm).
+    L_lambda : float or np.ndarray
+        Radiance in W·m⁻²·sr⁻¹·μm⁻¹.
+
+    Returns:
+    -------
+    L_wavenumber : float or np.ndarray
+        Radiance in W·m⁻²·sr⁻¹·(cm⁻¹)⁻¹.
+    """
+    lambda_um = np.asarray(lambda_um)
+    L_lambda = np.asarray(L_lambda)
+    return L_lambda * (lambda_um ** 2) / 1e4
+
+
+def radiance_wavenumber_to_um(lambda_um, L_wavenumber):
+    """
+    Convert spectral radiance from per wavenumber to per micrometre.
+
+    Parameters:
+    ----------
+    lambda_um : float or np.ndarray
+        Wavelength(s) in micrometres (μm).
+    L_wavenumber : float or np.ndarray
+        Radiance in W·m⁻²·sr⁻¹·(cm⁻¹)⁻¹.
+
+    Returns:
+    -------
+    L_lambda : float or np.ndarray
+        Radiance in W·m⁻²·sr⁻¹·μm⁻¹.
+    """
+    lambda_um = np.asarray(lambda_um)
+    L_wavenumber = np.asarray(L_wavenumber)
+    return L_wavenumber * 1e4 / (lambda_um ** 2)
+
+
+#########################################
+# Define affine model
+def affine(x, m, p):
+    return m * x + p
+
+
 #################################################
-def orthro(args):
+def orthro(args, transectname, flightname, flightdate):
    
     x, y, z = args[:3]
     o, p, k = args[3:]
 
     correction_opk = np.array([o,p,k])
     correction_xyz = np.array([x,y,z])
-    src_files =  sorted(glob.glob(f"{indirimg}/f1*.tif" ))
+    src_files =  sorted(glob.glob(f"{indirimg}/f{filtre}*.tif" ))
 
 
    
@@ -70,23 +124,81 @@ def orthro(args):
     
     imu = xr.open_dataset(indir+imufile)
     #for idimg in idimgs[:1]:
-    src_files =  sorted(glob.glob(f"{indirimg}/f1*.tif" ))
+    src_files =  sorted(glob.glob(f"{indirimg}/f{filtre}*.tif" ))
+    df_calib = pd.read_csv('/data/shared/ATR42/TelposDLCalib/SILEX_telops_filtre_DL_fit.csv')
     
+    df_calib_f =    df_calib[df_calib.filtre == filtre]
+
     for src_file in src_files:
         if os.path.isfile(outdir+os.path.basename(src_file).replace('.tif','_ORTHO.tif')): continue
+        
         print(os.path.basename(src_file))
         base = os.path.basename(src_file)       # "f1-000000001.tif"
-        id_str = base.replace("f1-", "").replace(".tif", "")
+        id_str = base.replace(f"f{filtre}-", "").replace(".tif", "")
         frame_id = int(id_str)    
     
-        #if frame_id > 380:
-        #    correction_opk_ = optimizeAlignement_telops_function.opti_correction_opk(flightname, flightdate, transectname, indir, imufile, [frame_id], demFile).x
-        #    correction_opk  = ( correction_opk_ * scale[1]) - offset[1]
+        with tifffile.TiffFile(src_file) as tif:
+            # Get ImageDescription tag
+            description = tif.pages[0].tags["ImageDescription"].value
+            # Convert JSON string to dictionary
+            metadata = json.loads(description)
+            # Access ExposureTime
+            exposure_time = metadata["ExposureTime"]
+            # Read image data
+            data = tif.asarray()
+        
+        if filtre>=3:
+            #convert DL to Radiance
+            #-----------------
+            rad_cm = affine( data/exposure_time, df_calib_f.m.values, df_calib_f.p.values)
+            rad_lambda = radiance_wavenumber_to_um( df_calib_f['lambda'] , rad_cm)
+            
+            # sace to tmp before ortho
+            #-----------------
+            tif_path_ = f"{wkdir}/{base}".replace('.tif','_rad.tif')
+            # Save as float32 TIFF with metadata
+            tifffile.imwrite(
+                tif_path_,
+                rad_lambda.astype('float32'),
+                metadata=metadata
+            )
+            src_file_ = tif_path_
+
+        else: 
+            data = data/exposure_time
+            tif_path_ = f"{wkdir}/{base}".replace('.tif','_expcorr.tif')
+            # Save as float32 TIFF with metadata
+            tifffile.imwrite(
+                tif_path_,
+                data.astype('float32'),
+                metadata=metadata
+            )
+            src_file_ = tif_path_
+
+        if (frame_id >= 100) & (frame_id % 100 == 0 ):
+            print('###############')
+            print(src_file_)
+            print('ref id:', frame_id-99) 
+            correction_opk_copy = correction_opk.copy()
+            oc, pc, kc =  ( np.array(correction_opk) + offset[1] ) / scale[1]
+            result, params_ = optimizeAlignement_telops_f1.run_opt_correction(frame_id-99, src_file_, transectname, flightname, flightdate, oc, pc, kc)
+
+            [oc,pc,kc] = result.x
+            #xc,yc,zc = 0.5,0.5,0.5
+            #correction_xyz = (np.array([xc,yc,zc]) * scale[0]) - offset[0]
+            correction_opk = (np.array([oc,pc,kc]) * scale[1]) - offset[1]
+            print('modif of correction:')
+            print(np.array(correction_opk)-np.array(correction_opk_copy))
+            print('###############')
+            ##plot
+            #params_['flag_plot'] = True
+            #optimizeAlignement_telops_f1.residual( result.x , params_ )
+
         print(correction_opk)
-        print(src_file)
+        print(src_file_)
         print('process imu ...')
         imu = xr.open_dataset(indir+imufile)    
-        imuNcOoGeojson.imutogeojson(imu, wkdir, indirimg, flightname, correction_xyz, correction_opk, [src_file]) 
+        imuNcOoGeojson.imutogeojson(imu, wkdir, indirimg, flightname, correction_xyz, correction_opk, [src_file_]) 
         print('done                ') 
 
         str_tag = ''
@@ -94,17 +206,35 @@ def orthro(args):
         #create a camera model for src_file from interior & exterior parameters
         cameras = oty.FrameCameras(intparamFile, extparamFile)
 
-        camera = cameras.get(src_file)
+        camera = cameras.get(src_file_)
         # create Ortho object and orthorectify
-        ortho = oty.Ortho(src_file, demFile, camera=camera, crs=cameras.crs)
-        ortho.process(outdir+os.path.basename(src_file).replace('.tif','_ORTHO.tif'), overwrite=True)
+        ortho = oty.Ortho(src_file_, demFile, camera=camera, crs=cameras.crs)
+        out_file_ = outdir+os.path.basename(src_file_).replace('.tif','_ORTHO.tif')
+        ortho.process(out_file_, overwrite=True)
         del ortho, camera
         
-        to_epsg4326_inplace( outdir+os.path.basename(src_file).replace('.tif','_ORTHO.tif') )
+        to_epsg4326_inplace( outdir+os.path.basename(src_file_).replace('.tif','_ORTHO.tif') )
+       
         
         #remove_halo(         outdir+os.path.basename(src_file).replace('.tif','_ORTHO.tif') )
         
-    
+        #add meta data to ortho tif
+
+        # read existing image and metadata
+        with rasterio.open(out_file_, "r") as src:
+            img = src.read()
+            profile = src.profile
+            existing_meta = src.tags()
+
+        # merge metadata
+        existing_meta.update(metadata)
+
+        # write back preserving CRS and transform
+        with rasterio.open(out_file_, "w", **profile) as dst:
+            dst.write(img)
+            dst.update_tags(**existing_meta)
+
+
     del cameras
 
     return 'done'
@@ -176,68 +306,45 @@ def to_epsg4326_inplace(path, compress="LZW"):
 ##################################
 if __name__ == "__main__":
 ##################################
-    #indir = '/mnt/dataEstrella2/SILEX/ATR42/as240051/'
-    #indir = '/home/paugam/Data/ATR42/as250018/visible/bas/'
-    #indir = '/home/paugam/Data/ATR42/as250018/imgRef/'
-    #transectname = 'Sijean06_short'
-    transectname = 'Sijean10'
-    indir = f'/home/paugam/Data/ATR42/as250026/{transectname}/'
+    importlib.reload(optimizeAlignement_telops_f1)
+    importlib.reload(imuNcOoGeojson)
     
-    indirimg = indir + 'tif_f1/'
-    outdir   = indir + 'ortho/'
-    #if os.path.isdir(outdir):
-    #    shutil.rmtree(outdir)
+    flightname = 'as250026'
+    flightdate = '20250726'
+    transectname = 'Sijean01'
+    filtre=1
+    
+    indir = f'/data/shared/ATR42/as250026/Transects/{transectname}'
+   
+    indirimg = indir + f'/tif_f{filtre}/'
+    outdir   = indir + f'/full_ortho_f{filtre}/'
+    if os.path.isdir(outdir):
+        shutil.rmtree(outdir)
     os.makedirs(outdir, exist_ok=True)
     
     wkdir = '/tmp/paugam/orthority_wkdir/'
-    #if os.path.isdir(wkdir): shutil.rmtree(wkdir)
+    if os.path.isdir(wkdir): shutil.rmtree(wkdir)
     os.makedirs(wkdir, exist_ok=True)
 
-    #imufile = '../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_CORE_NAV_200HZ_20250710_as250018_L1_V1_smooth.nc'
-    imufile = '../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
+    imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
     
-    #flightname = 'as250018'
-    flightname = 'as250026'
-    flightdate = '20250726'
     
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")
     warnings.filterwarnings("ignore", category=OrthorityWarning)  # show once per message
 
-    #demFile =  '{:s}/../dem/dem_as250018.tif'.format(indir)
-    demFile =  '{:s}/../dem/as250026_dem_1m.tif'.format(indir)
-    #demFile =  '{:s}/../dem/as250018_dem_1m.tif'.format(indir)
+    demFile =  '{:s}/../../dem/as250026_dem_1m.tif'.format(indir)
     
     intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
-    #from popt = optimize.fmin(residual, tuple([-1, 3.5, -15]), args=tuple(params), xtol=5, ftol=1.e-4, disp=False
-    #correction_opk = [-1.69183706,   3.06752315, -14.98225642] 
-    #correction_xyz = [2.10512566e-04,  1.70885594e-04,  2.61422540e-04, ]
-    #correction_opk = [-5.52140251e-01,3.34409679e+00, -1.62949875e+01]
-    
-    #correction_xyz = [ 2.42538810e-05, 2.04130933e-04,  4.58924207e-05]
-    #correction_opk = [-8.88472742e-01, 5.01270986e-01, -3.32808844e-05]
-     
-    #correction_xyz = [-4.54166272e-05,  1.46991992e-04,  3.92582905e-04]
-    #correction_opk = [ -4.62240706e-01,2.50020186e+00,  1.76677744e-04]
     offset = [ np.array([.5,.5,.5]),    np.array([5,5,5]) ]
     scale = [ np.array([1,1,1]), np.array([10,10,10,]) ]   
     
-    #offset = [ np.array([479,24.5,20]),    np.array([3.5,3.5,3.5]) ]
-    #scale = [ np.array([10,10,10]), np.array([7,7,7,]) ]
-    #popt = np.load('resbrute1_xycopk_minimize.npy',allow_pickle=True)
-    #xc,yc,zc,o,p,k = popt.item().x 
-    #popt = np.load('resbrute1_xycopk_minimize.npy',allow_pickle=True)
-    #xc,yc,zc,o,p,k = [0,0,0,0,0,0] #popt.item().x 
-    oc,pc,kc = np.load(f'resbrute1_xycopk_minimize2_{transectname}_1.npy',allow_pickle=True).item().x 
+    oc,pc,kc = np.load(f'resbrute1_xycopk_minimize2_{transectname}.npy',allow_pickle=True).item().x 
     
-    #xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.5,0.5,0.5
     xc,yc,zc = 0.5,0.5,0.5
     
     correction_xyz = (np.array([xc,yc,zc]) * scale[0]) - offset[0]
     correction_opk = (np.array([oc,pc,kc]) * scale[1]) - offset[1]
 
 
-    orthro([*correction_xyz,*correction_opk])
+    orthro([*correction_xyz,*correction_opk], transectname, flightname, flightdate)
     
-    #if os.path.isdir(wkdir): shutil.rmtree(wkdir)
-
-

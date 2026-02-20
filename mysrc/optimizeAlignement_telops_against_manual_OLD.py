@@ -314,8 +314,7 @@ def residual(args, *params):
         params= params[0]
     flag_plot = params[1]
     global iii
-    
-    #if (iii) % 50 == 0: flag_plot = True
+    if (iii) % 50 == 0: flag_plot = True
 
     flag_resi = params[5]
 
@@ -480,21 +479,33 @@ if __name__ == "__main__":
     import tracemalloc
     tracemalloc.start()
     
-    #transectname = 'Sijean02' 
-    transectname = 'Sijean03' 
-    
+    #flightname = 'as250018'
+    #flightdate = '20250710'
+    #startdate = '071751'
+
     flightname = 'as250026'
     flightdate = '20250726'
-    indir = f'/data/shared/ATR42/as250026/Transects/{transectname}'
+    #startdate = '071751'
+    #transectname = 'Sijean06_short' 
+    transectname = 'Sijean10' 
+    #indir = '/home/paugam/Data/ATR42/as250018/visible/bas/'
+    #indir = '/home/paugam/Data/ATR42/as250018/imgRef/'
+    #indir = '/home/paugam/Data/ATR42/as250018/imgRef/'
+    indir = f'/home/paugam/Data/ATR42/as250026/{transectname}/'
     
     outdir = indir + 'io/'
     wkdir = '/tmp/orthority3/'
     os.makedirs(wkdir, exist_ok=True)
 
-    imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
+    #imufile = 'SCALE-2024_SAFIRE-ATR42_SAFIRE_CORE_NAV_100HZ_20241113_as240051_L1_V1.nc'
+    #imufile = '../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_CORE_NAV_200HZ_20250710_as250018_L1_V1_smooth.nc'
+    imufile = '../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
     imgdirname = 'tif_f1/'
+    #idimgs = [0]   
     idimgs = [1]   
-    demFile =  '{:s}/../../dem/{:s}_dem_1m.tif'.format(indir,flightname)
+    #imgdirname = 'img2'
+    #idimgs = [65]   
+    demFile =  '{:s}/../dem/{:s}_dem_1m.tif'.format(indir,flightname)
 
     indirimg = indir + '{:s}/'.format(imgdirname)
     
@@ -503,16 +514,59 @@ if __name__ == "__main__":
 
     intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
 
+    #sentinel
+    #s2 = xr.open_dataset(indir+'sentinel_background_test_cropped_{:s}.tif'.format(imgdirname))
+    #gradS2 = get_gradient(s2.band_data.isel(band=1))
+    #dagradS2 = xr.DataArray(gradS2, dims=["y", "x"], coords={"y": s2.y, "x": s2.x})
+
+    rr = 3
+    #dagradS2 = dagradS2/1000.
+    #dagradS2 = dagradS2.where(dagradS2<1,1)
+    #daRef = dagradS2
+    #daRef = daRef.rolling(x=rr, y=rr, center=True).mean()
+    #daRef = local_normalization(daRef, diskSize=200,)
+    #daRef = daRef.rio.write_crs(s2.rio.crs)
+   
+
     rr = 3
     da1Rs =  [xr.open_dataset(f"{indir}/tif_f1_ortho/f1-{idimg:09d}_modified.tif").rio.reproject(32631) for idimg in idimgs]
+    #da1R = da1R.band_data.isel(band=1)
+    #da1R = da1R.drop_vars(['band'])
+    #da1R = da1R.rio.reproject(27563)
+    #da1R = da1R.coarsen(dim={'x': 2, 'y': 2}, boundary="trim").mean()
+    #gradda1R = get_gradient(da1R)
+    #dagradda1R = xr.DataArray(gradda1R, dims=["y", "x"], coords={"y": da1R.y, "x": da1R.x})
+    #dagradda1R = dagradda1R.interp(x=daRef.x, y=daRef.y)
+    #da1Ref = dagradda1R.rolling(x=rr, y=rr, center=True).mean()
+    #da1Ref = local_normalization(da1Ref, diskSize=200,)
+    #da1Ref = da1Ref.rio.write_crs(da1R.rio.crs)
+    #da1Ref = da1Ref.fillna(0)
     
     da1Refs = [img2da4residu(rr,da1R,da1R,flag_ref=True) for da1R in da1Rs ]
      
+    #da1Refs[0].plot()
+    #plt.show()
+    #sys.exit()failed
+
+    ''' 
+    da2R =  xr.open_dataset(indir+'img_manualOrtho/as240051_20241113_103254-99.tif')
+    da2R = da2R.coarsen(dim={'x': 2, 'y': 2}, boundary="trim").mean()
+    gradda2R = get_gradient(da2R.band_data.isel(band=1))
+    dagradda2R = xr.DataArray(gradda2R, dims=["y", "x"], coords={"y": da2R.y, "x": da2R.x})
+    dagradda2R = dagradda2R.interp(x=daRef.x, y=daRef.y)
+    da2Ref = dagradda2R.rolling(x=rr, y=rr, center=True).mean()
+    da2Ref = local_normalization(da2Ref, diskSize=200,)
+    da2Ret = da2Ref.rio.write_crs(da2R.rio.crs)
+    da2Ref = da2Ref.fillna(1)
+    '''
+    #loc camera to central 479cm, 24.5 cm et -20c
+
     offset = [ np.array([.5,.5,.5]),    np.array([5,5,5]) ]
     scale = [ np.array([1,1,1]), np.array([10,10,10,]) ]
 
     imu = xr.open_dataset(indir+imufile)
      
+
     if False: 
         #popt = np.array([ -0.93871095,  -1.06893665,  -1.03742455,  -1.56363453, 2.64046062, -15.92574779])
         #popt = np.array([-0.96509656,  -1.02242933,  -1.02461382,  -1.54239457, 2.6027513 , -15.99057932])
@@ -526,8 +580,27 @@ if __name__ == "__main__":
         residual( popt , params )
         #residual( popt.item().x , params)
         sys.exit()
+    '''
+    rranges = (slice(-2,2,1), slice(-2,2,1), commentslice(-2,2,1), 
+               slice(-2, 2, .5), slice(-2, 2, .5), slice(-2, 2, 0.5))
+
+    if not(os.path.isfile('resbrute1.npy')):
+        print('start first opt')
+        params = [False]
+        resbrute1 = optimize.brute(residual, rranges, args=params, full_output=False,
+                                  finish=None,)# workers=16 )
+        
+        np.save('resbrute1.npy',resbrute1)
+    else:
+        resbrute1 = np.load('resbrute1.npy')
+
+    print(resbrute1)
+    xc,yc,zc,oc,pc,kc = resbrute1
+    '''
+    #xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.35,0.7,0.5
     xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.5,0.5,0.5
     
+    #resbrutef =  [xc,yc,zc] + [oc,pc,kc]
     resbrutef =  [oc,pc,kc]
     
     from scipy.optimize import minimize

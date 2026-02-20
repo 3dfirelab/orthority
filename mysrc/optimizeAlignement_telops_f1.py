@@ -17,7 +17,8 @@ import importlib
 import sys
 import gc
 import functools
-
+import time as timeLib
+from scipy.optimize import minimize
 
 #homebrewed
 import imuNcOoGeojson  
@@ -31,6 +32,8 @@ import skimage
 from skimage.morphology import disk
 from skimage.filters.rank import equalize
 import warnings
+import re
+from pathlib import Path
 
 import dask
 from dask.diagnostics import ProgressBar
@@ -307,47 +310,64 @@ def img2da4residu(rrh, atr, da1Ref, flag_ref=False):
     
     return da1
 
+
 #################################################
-def residual(args, *params):
-    
-    if len(params)==1: 
-        params= params[0]
-    flag_plot = params[1]
+def extract_img_id(filepath):
+    name = Path(filepath).name
+    match = re.search(r'-(\d{9})(?:_[^.]+)?\.tif$', name)
+    return int(match.group(1)) if match else None
+
+
+#################################################
+def residual(args, params):
+   
+    flag_plot = params['flag_plot']
     global iii
     
     #if (iii) % 50 == 0: flag_plot = True
 
-    flag_resi = params[5]
+    flag_resi = params['flag_opt_resi']
 
-    #mem0 = psutil.virtual_memory()
-    #rrh = 3
-    if len(params) == 1: 
-        params = params[0]
-
-    if params[2] == 'opk':
+    flag_opt = params['flag_opt']
+    if flag_opt == 'opk':
         o, p, k = args[:]
-        xc, yc, zc = params[4]
-    if params[2] == 'xyz':
+        xc, yc, zc = params['xyz0']
+    if flag_opt == 'xyz':
         xc, yc, zc = args[:]
-        o, p, k = params[3:]
-    if params[2] == 'xyzopk':
+        o, p, k = params['opk0']
+    if flag_opt == 'xyzopk':
         o, p, k   = args[3:]
         xc, yc, zc = args[:3]
-    
-    offset = np.array(params[0]['offset'])
-    scale = np.array(params[0]['scale'])
+   
+    indir = params['indir']
+    imgdirname = params['imgdirname']
+    wkdir = params['wkdir']
+    flightname = params['flightname']
+    flightdate = params['flightdate']
+    src_file = params['src_file']
+    idimgs_src =  [extract_img_id(p) for p in [src_file]]
+
+    demFile = params['demFile']
+    rr = params['rr']
+
+    offset = np.array(params['offsetScale']['offset'])
+    scale = np.array(params['offsetScale']['scale'])
 
     correction_opk = (np.array([o,p,k])*scale[1])    - offset[1]
     correction_xyz = (np.array([xc,yc,zc])*scale[0]) - offset[0]
+
+    da1Refs = params['da1Refs']
 
     #atr
     #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
     #correction_opk = np.array([0.,3.,-16]) # degree
     #src_files = [f"/{indir}/{imgdirname}/{flightname}_{flightdate}_{startdate}-{idimg}.tif" for idimg in idimgs] 
-    src_files = [f"/{indir}/{imgdirname}/f1-{idimg:09d}.tif" for idimg in idimgs] 
+    #src_files = [f"/{indir}/{imgdirname}/f1-{idimg:09d}.tif" for idimg in idimgs_src] 
+    src_files = [src_file] 
 
     str_tag = '_{:.1f}{:.1f}{:.1f}_{:.1f}{:.1f}{:.1f}'.format(*correction_xyz,*correction_opk).replace('.','p')
-    imuNcOoGeojson.imutogeojson( params[3], wkdir, indirimg, flightname, correction_xyz, correction_opk, src_files,str_tag=str_tag)
+    indirimg = indir + '/{:s}'.format(imgdirname)
+    imuNcOoGeojson.imutogeojson( params['imu'], wkdir, indirimg, flightname, correction_xyz, correction_opk, src_files ,str_tag=str_tag)
 
     #for idimg in idimgs:
     #    if os.path.isfile(indir+'as240051_20241113_103254-{:d}_ORTHO.tif'.format(idimg)):
@@ -381,9 +401,10 @@ def residual(args, *params):
             
     extparamFile =  "{:s}/{:s}_ext_param{:s}.geojson".format(wkdir,flightname,str_tag)
     #create a camera model for src_file from interior & exterior parameters
+    intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
     cameras = oty.FrameCameras(intparamFile, extparamFile)
 
-    for idimg, src_file in zip(idimgs,src_files):
+    for idimg, src_file in zip(idimgs_src,src_files):
         #src_file =  "/{:s}/{:s}_masked/as240051_20241113_103254-{:d}.tif".format(indir,imgdirname,idimg) 
         camera = cameras.get(src_file)
         
@@ -396,7 +417,7 @@ def residual(args, *params):
     da1_res = [] 
     resi = float(0.0)
     penalty_factor = 1.
-    for idimg,da1Ref in zip(idimgs,da1Refs):
+    for idimg,da1Ref in zip(idimgs_src,da1Refs):
         #mem1 = psutil.virtual_memory()
         #atr = xr.open_dataset(wkdir+'as240051_20241113_103254-{:d}_ORTHO{:s}.tif'.format(idimg,str_tag))
         atr = xr.open_dataset(f"{wkdir}/{flightname}_{flightdate}-{idimg}_ORTHO{str_tag}.tif")
@@ -410,15 +431,17 @@ def residual(args, *params):
         if flag_resi == 'resi2':
             resi += float(abs((da1-da1Ref)).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
        
-        overlap_mask = (~da1Ref.isnull())  # or any valid domain definition
-        #resi += float(abs((da1 - da1Ref)).where(overlap_mask,0.0).sum())
-        print(resi, end=' | ')
-        resi1 = resi 
-        da1_mask = (~da1.isnull())  # or any valid domain definition
-        if flag_resi == 'resi1':
-            resi += float(np.abs(da1_mask.values.astype(int)-overlap_mask.values.astype(int)).sum()) 
-     
-        print(resi-resi1, end=' | ')
+        #overlap_mask = ((~da1Ref.isnull()) & (da1Ref < 10000))  # or any valid domain definition
+        ##resi += float(abs((da1 - da1Ref)).where(overlap_mask,0.0).sum())
+        ##print(f"{resi:9.2f}", end='  | ')
+        #resi1 = resi 
+        #da1_mask = ((~da1.isnull()) & (da1 < 10000))  # or any valid domain definition
+        
+        #if flag_resi == 'resi1':
+        #    resi += float(np.abs(da1_mask.values.astype(int)-overlap_mask.values.astype(int)).sum()) 
+        #
+        #print(f"{resi-resi1:9.2f}", end=' | ')
+        
         if resi<10: pdb.set_trace()
 
         if flag_plot:
@@ -429,8 +452,9 @@ def residual(args, *params):
     #mem2 = psutil.virtual_memory()
     #print(mem2.used/mem1.used)
     
-    mem = psutil.virtual_memory()
-    print('{:.2f},{:.2f},{:.2f}  {:.2f},{:.2f},{:.2f} | {:.1f} || {:.1f} || {:.3f},{:.3f},{:.3f} {:d} '.format(*correction_xyz,*correction_opk, resi, mem.used/(1024 ** 3), o,p,k, iii))
+    #mem = psutil.virtual_memory()
+    #print('{:.2f},{:.2f},{:.2f}  {:.2f},{:.2f},{:.2f} | {:.1f} || {:.1f} || {:.3f},{:.3f},{:.3f} {:d} '.format(*correction_xyz,*correction_opk, resi, mem.used/(1024 ** 3), o,p,k, iii))
+    #print(' {:5.2f},{:5.2f},{:5.2f} || {:.1f} || {:.3f},{:.3f},{:.3f} | {:d} '.format(*correction_opk, resi, o,p,k, iii))
     
     '''snapshot = tracemalloc.take_snapshot()
     top_stats = snapshot.statistics('lineno')
@@ -438,7 +462,6 @@ def residual(args, *params):
     for stat in top_stats[:3]:
         print(stat)
     '''
-  
     if flag_plot:
         print(correction_xyz)
         print(correction_opk)
@@ -446,24 +469,23 @@ def residual(args, *params):
             fig = plt.figure()
             ax = plt.subplot(121)
             (da1-da1Ref).plot(ax=ax)
-            #ax = plt.subplot(122)
-            #(da2-da2Ref).plot(ax=ax)
+            
+            mask_ref = (~da1Ref.isnull())
+            mask_ref.plot.contour(colors='k')
+            
+            mask_da = (~da1.isnull())
+            mask_da.plot.contour(colors='r')
+            
             ax = plt.subplot(122)
-            da1Rs[0].isel(band=0)['band_data'].plot()
             (da1Ref).plot(ax=ax,alpha=.5)
             (da1).plot.contour(ax=ax,colors='k')
-            #atr.isel(band=0)['band_data'].plot(cmap='inferno',alpha=0.5)
-            #plt.figure()
-            #ax = plt.subplot(111)
-            #(da2Ref).plot(ax=ax,alpha=.5)
-            #(da2).plot.contour(ax=ax,colors='k')
+
+        plt.show()   # Allows GUI update (non-blocking)
         
-        plt.show()
-        pdb.set_trace()
-  
+
     if not(flag_plot):
         os.remove(extparamFile)
-        for idimg in idimgs:
+        for idimg in idimgs_src:
             os.remove(wkdir+f'{flightname}_{flightdate}-{idimg}_ORTHO{str_tag}.tif')
     
     del atr,da1
@@ -474,18 +496,10 @@ def residual(args, *params):
     return float(resi)
 
 
-##################################
-if __name__ == "__main__":
-##################################
-    import tracemalloc
-    tracemalloc.start()
-    
-    #transectname = 'Sijean02' 
-    transectname = 'Sijean03' 
-    
-    flightname = 'as250026'
-    flightdate = '20250726'
-    indir = f'/data/shared/ATR42/as250026/Transects/{transectname}'
+######################################################
+def run_opt_correction(idimg_ref, src_file, transectname, flightname, flightdate, oc,pc,kc ):
+
+    indir = f'/data/shared/ATR42/{flightname}/Transects/{transectname}'
     
     outdir = indir + 'io/'
     wkdir = '/tmp/orthority3/'
@@ -493,18 +507,15 @@ if __name__ == "__main__":
 
     imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
     imgdirname = 'tif_f1/'
-    idimgs = [1]   
     demFile =  '{:s}/../../dem/{:s}_dem_1m.tif'.format(indir,flightname)
 
-    indirimg = indir + '{:s}/'.format(imgdirname)
     
-    
+    tif_ref = f"{indir}/full_ortho_f1/f1-{idimg_ref:09d}_expcorr_ORTHO.tif"
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")         
 
-    intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
 
     rr = 3
-    da1Rs =  [xr.open_dataset(f"{indir}/tif_f1_ortho/f1-{idimg:09d}_modified.tif").rio.reproject(32631) for idimg in idimgs]
+    da1Rs =  [xr.open_dataset(tif_ref).rio.reproject(32631) ]
     
     da1Refs = [img2da4residu(rr,da1R,da1R,flag_ref=True) for da1R in da1Rs ]
      
@@ -513,31 +524,35 @@ if __name__ == "__main__":
 
     imu = xr.open_dataset(indir+imufile)
      
-    if False: 
-        #popt = np.array([ -0.93871095,  -1.06893665,  -1.03742455,  -1.56363453, 2.64046062, -15.92574779])
-        #popt = np.array([-0.96509656,  -1.02242933,  -1.02461382,  -1.54239457, 2.6027513 , -15.99057932])
-        #popt = np.array([0.,0.,0.,0., 2.,0 ])
-        popt = np.load('resbrute1_xycopk_minimize2.npy',allow_pickle=True).item().x
-        #xc,yc,zc,o,p,k = popt.item().x
-        #correction_opk = (np.array([o,p,k])-offset[1])    / scale[1]
-        #correction_xyz = (np.array([xc,yc,zc])-offset[0]) / scale[0]
-        #popt = [*correction_xyz, *correction_xyz]
-        params = [ {'offset':offset,'scale':scale}, True,'opk', imu, [0.5,0.5,0.5] , 'resi2']
-        residual( popt , params )
-        #residual( popt.item().x , params)
-        sys.exit()
-    xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.5,0.5,0.5
+    xc,yc,zc  = 0.5,0.5,0.5
     
+    #popt = np.load('resbrute1_xycopk_minimize2_Sijean01.npy',allow_pickle=True).item().x
+    #oc,pc,kc = popt
+
     resbrutef =  [oc,pc,kc]
     
-    from scipy.optimize import minimize
-    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi1' ]
+    params = { 'offsetScale': {'offset':offset,'scale':scale},
+              'flag_plot': False,
+              'flag_opt': 'opk',
+              'imu': imu, 
+              'xyz0': [0.5,0.5,0.5], 
+              'flag_opt_resi': 'resi2', 
+              'indir': indir,
+              'imgdirname': imgdirname,
+              'wkdir': wkdir,
+              'demFile': demFile,
+              'da1Refs': da1Refs,
+              'rr': rr,
+              'flightname': flightname,
+              'flightdate': flightdate,
+              'src_file': src_file
+              }
 
     # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
     x0 = np.array(resbrutef)  # assuming resbrutef is a list or array of length 6
 
     # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.9  # Increase this if your function is too flat at the start
+    step_size = 0.04  # Increase this if your function is too flat at the start
     n = len(x0)
     initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
 
@@ -545,7 +560,7 @@ if __name__ == "__main__":
     result = minimize(
         fun=residual,
         x0=x0,
-        args=tuple(params),  # your additional parameters to residual()
+        args=params,  # your additional parameters to residual()
         method='Nelder-Mead',
         options={
             'initial_simplex': initial_simplex,
@@ -555,99 +570,43 @@ if __name__ == "__main__":
             'maxiter': 1000  # optional: increase if needed
         }
     )
-    np.save(f'resbrute1_xycopk_minimize1_{transectname}.npy',result)
+    #np.save(f'resbrute1_xycopk_minimize1_{transectname}_test.npy',result)
 
+    return result, params
 
-    popt = result.x
-    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi2' ]
-
-    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
-    x0 = np.array(popt)  # assuming resbrutef is a list or array of length 6
-
-    # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.05  # Increase this if your function is too flat at the start
-    n = len(x0)
-    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
-
-    # Perform optimization using Nelder-Mead with the custom simplex
-    result = minimize(
-        fun=residual,
-        x0=x0,
-        args=tuple(params),  # your additional parameters to residual()
-        method='Nelder-Mead',
-        options={
-            'initial_simplex': initial_simplex,
-            'xatol': 0.01,
-            'fatol': 0.1,
-            'disp': True,
-            'maxiter': 1000  # optional: increase if needed
-        }
-    )
-
-    np.save(f'resbrute1_xycopk_minimize2_{transectname}.npy',result)
-    sys.exit()
-
-
-
-
-
-
-
-
-# Resulting optimal parameters
-    popt = result.x
-
-    print('start last opt')
-    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0,0,0]]
-    popt2 = optimize.fmin(residual, tuple(popt), args=tuple(params), xtol=0.01, ftol=0.01, disp=False)
-    np.save('resbrute2_xycopk_minimize.npy',popt2)
-    sys.exit()
-
-
-
-
-    print('start opk opt')
-    rranges = (slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7))
-    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu]
-    resbrute2 = optimize.brute(residual, rranges, args=params, full_output=False,
-                              finish=None)#, workers=16 )
-    oc,pc,kc = resbrute2
-    np.save('resbrute1_opk.npy',resbrute2)
-    print(xc,yc,zc,oc,pc,kc)
-
-    #rranges = (slice(oc-3,oc+3,.5), slice(pc-3,pc+3,.5), slice(kc-3,  kc+3,  .5))
-    '''
-    print('start opk opt')
-    rranges = (slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7))
-    params = [ {'offset':offset,'scale':scale}, False,'opk',xc,yc,zc, imu]
-    resbrute2 = optimize.brute(residual, rranges, args=params, full_output=False,
-                              finish=None)#, workers=16 )
-    oc,pc,kc = resbrute2
-    np.save('resbrute1_opk.npy',resbrute2)
-    print(xc,yc,zc,oc,pc,kc)
-
-    #rranges = (slice(xc-20,xc+20,3), slice(yc-20,yc+20,3), slice(zc-20,  zc+20,  3))
-    print('start xyz opt')
-    rranges = (slice(0,1,1./7), slice(0,1,1./7), slice(0,1,1./7))
-    params = [ {'offset':offset,'scale':scale}, False,'xyz',oc,pc,kc, imu]
-    resbrute2 = optimize.brute(residual, rranges, args=params, full_output=False,
-                              finish=None)#, workers=16 )
-    xc,yc,zc = resbrute2
-    np.save('resbrute1_xyc.npy',resbrute2)
-    '''
-
-    print(xc,yc,zc,oc,pc,kc)
+##################################
+if __name__ == "__main__":
+##################################
+    import tracemalloc
+    tracemalloc.start()
     
-    resbrutef =  [xc,yc,zc] + [oc,pc,kc]
+    idimg_ref = 1
 
-    print('start last opt')
-    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu]
-    popt = optimize.fmin(residual, tuple(resbrutef), args=tuple(params), xtol=0.1, ftol=0.1, disp=False)
+    #transectname = 'Sijean02' 
+    transectname = 'Sijean01' 
+    
+    flightname = 'as250026'
+    flightdate = '20250726'
+    
+    popt = np.load('resbrute1_xycopk_minimize2_Sijean01.npy',allow_pickle=True).item().x
+    oc,pc,kc = popt
 
-    np.save('resbrute22.npy',popt)
-    print(popt)
-    #resbrute.append([-1.69183706,   3.06752315, -14.98225642])
-    #resbrute = []
-    #resbrute.append([0,0,0, -0.63767196,   3.36609474, -16.31209226])
+    idimg = 99
+    imgdirname = 'tif_f1/'
+    indir = f'/data/shared/ATR42/{flightname}/Transects/{transectname}'
+    src_file = f"/{indir}/{imgdirname}/f1-{idimg:09d}.tif"  
+
+    result, params = run_opt_correction(idimg_ref, src_file, transectname, flightname, flightdate, oc,pc,kc)
+        
+    #plot
+    #####
+    params['flag_plot'] = True
+    residual( result.x , params )
+    
+
+
+
+
+
 
 

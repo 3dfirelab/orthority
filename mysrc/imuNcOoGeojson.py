@@ -169,6 +169,7 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
             frame_name = frame.replace('_corrected_masked','')
         else:
             frame_name = frame
+        
         with rasterio.open(frame_name) as src:
             # Read metadata
             metadata = src.tags()
@@ -190,7 +191,16 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
                             time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S.%f")
                         except:
                             time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S")
+                elif 'Time' in metadata.keys():
+                    try: 
+                        time = datetime.datetime.strptime(metadata['Time'], "%Y-%m-%d %H:%M:%S.%f")
+                    except: 
+                        time = datetime.datetime.strptime(metadata['Time'], "%Y-%m-%d %H:%M:%S")
 
+                else: 
+                    print('could not find time in tif')
+                    print('stop here')
+                    sys.exit()
             '''
             idx = np.abs(imu.time.values-np.datetime64(time)).argmin()
             #latlonZ

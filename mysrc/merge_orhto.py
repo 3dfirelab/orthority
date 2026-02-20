@@ -13,12 +13,18 @@ warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
 #folder = Path("/home/paugam/Data/ATR42/as250026/Sijean06_short/ortho")
 #out_path = folder / "f1_merged_Sijean06_short.tif"
-folder = Path("/home/paugam/Data/ATR42/as250026/Sijean10/ortho")
-out_path = folder / "f1_merged_Sijean10.tif"
+
+#filterCam=5
+#suffix='_rad_ORTHO'
+filterCam=1
+suffix='_ORTHO'
+
+folder = Path(f"/data/shared/ATR42/as250026/Transects/Sijean03/full_ortho_f{filterCam}")
+out_path = folder / f"f{filterCam}_merged_Sijean03.tif"
 default_nodata = 0
 
 def numeric_id(path: Path) -> int:
-    m = re.search(r'-(\d+)_ORTHO\.tif$', path.name, re.IGNORECASE)
+    m = re.search(f'-(\d+){suffix}\.tif$', path.name, re.IGNORECASE)
     if m:
         return int(m.group(1))
     nums = re.findall(r'\d+', path.name)
@@ -34,7 +40,7 @@ def open_single_band(fp: Path):
 
 def get_time(fp: Path):
     """Extract datetime from TIFFTAG_IMAGEDESCRIPTION if present."""
-    with rxr.open_rasterio(str(fp.absolute()).replace('/ortho/','/tif_f1/').replace('_ORTHO','')) as da:
+    with rxr.open_rasterio(str(fp.absolute()).replace(f'/full_ortho_f{filterCam}/',f'/tif_f{filterCam}/').replace(f'{suffix}','')) as da:
         desc = da.attrs.get("TIFFTAG_IMAGEDESCRIPTION")
     if not desc:
         return None
@@ -113,6 +119,11 @@ for fp in tifs:
     
 merged.attrs["start_time"] = first_time.strftime("%Y-%m-%d %H:%M:%S.%f")
 merged.attrs["end_time"]   = last_time.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+if "_FillValue" in merged.attrs:
+    del merged.attrs["_FillValue"]
+
+#merged = merged.rio.write_nodata(0) 
 
 # --- save
 merged.rio.to_raster(
