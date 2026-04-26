@@ -19,6 +19,8 @@ import gc
 import functools
 import time as timeLib
 from scipy.optimize import minimize
+from rasterio.features import rasterize
+import rasterio
 
 #homebrewed
 import imuNcOoGeojson  
@@ -358,6 +360,8 @@ def residual(args, params):
 
     da1Refs = params['da1Refs']
 
+    maskPlume = params['maskPlume']
+
     #atr
     #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
     #correction_opk = np.array([0.,3.,-16]) # degree
@@ -427,9 +431,41 @@ def residual(args, params):
         #da2 = img2da4residu(idimgs[1],rrh)
         
         #get a metric to penalize when da1 non nan are outsie da1Ref value
+        #da1_mask     = ((~da1.isnull())    & (da1    <  50))  # or any valid domain definition
+        #da1_ref_mask = ((~da1Ref.isnull()) & (da1Ref <  50))  # or any valid domain definition
+        common_mask = (
+            (~da1.isnull()) &
+            (~da1Ref.isnull()) &
+            (da1 < 50) &
+            (da1Ref < 50)
+        )
+        
+        # 1) mask plume to crs 
+        maskPlume_utm = maskPlume.to_crs(common_mask.rio.crs)
+
+        # 2) Prepare rasterization inputs
+        transform = common_mask.rio.transform()
+        out_shape = common_mask.shape
+
+        # Plume value 0 inside polygons
+        shapes = [(geom, 0) for geom in maskPlume_utm.geometry if geom is not None and not geom.is_empty]
+
+        plume = rasterize(
+            shapes=shapes,
+            out_shape=out_shape,
+            transform=transform,
+            fill=1,                 # outside polygons -> 1 (will be ignored below)
+            dtype=np.uint8,
+            all_touched=False       # set True if you want any touched pixel included
+        )
+
+        # 3) Apply burn: set inside polygon to 0, keep original elsewhere
+        common_mask.values = np.where(plume == 0, 0, common_mask.values)
+       
+        #if plume.min() == 0 : pdb.set_trace()  
 
         if flag_resi == 'resi2':
-            resi += float(abs((da1-da1Ref)).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
+            resi += float(abs((da1.where(common_mask)-da1Ref.where(common_mask))).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
        
         #overlap_mask = ((~da1Ref.isnull()) & (da1Ref < 10000))  # or any valid domain definition
         ##resi += float(abs((da1 - da1Ref)).where(overlap_mask,0.0).sum())
@@ -497,7 +533,8 @@ def residual(args, params):
 
 
 ######################################################
-def run_opt_correction(idimg_ref, src_file, transectname, flightname, flightdate, oc,pc,kc ):
+def run_opt_correction(idimg_ref, src_file, transectname, flightname, flightdate, oc,pc,kc, maskPlume=None ):
+
 
     indir = f'/data/shared/ATR42/{flightname}/Transects/{transectname}'
     
@@ -545,7 +582,8 @@ def run_opt_correction(idimg_ref, src_file, transectname, flightname, flightdate
               'rr': rr,
               'flightname': flightname,
               'flightdate': flightdate,
-              'src_file': src_file
+              'src_file': src_file,
+              'maskPlume': maskPlume
               }
 
     # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)

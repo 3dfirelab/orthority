@@ -23,7 +23,7 @@ import subprocess
 import rasterio
 from orthority.ortho import OrthorityWarning
 import pandas as pd 
-
+import datetime
 
 #homebrewed
 import imuNcOoGeojson 
@@ -96,7 +96,7 @@ def affine(x, m, p):
 
 
 #################################################
-def orthro(args, transectname, flightname, flightdate):
+def orthro(args, transectname, flightname, flightdate, indir):
    
     x, y, z = args[:3]
     o, p, k = args[3:]
@@ -128,6 +128,11 @@ def orthro(args, transectname, flightname, flightdate):
     df_calib = pd.read_csv('/data/shared/ATR42/TelposDLCalib/SILEX_telops_filtre_DL_fit.csv')
     
     df_calib_f =    df_calib[df_calib.filtre == filtre]
+    correction_opk_arr = []
+    correction_opk_time_arr = []
+
+    maskPlume_file = f'/data/shared/ATR42/{flightname}/mask/plumeMask_{transectname}.gpkg'
+    maskPlume = gpd.read_file(maskPlume_file)
 
     for src_file in src_files:
         if os.path.isfile(outdir+os.path.basename(src_file).replace('.tif','_ORTHO.tif')): continue
@@ -175,13 +180,14 @@ def orthro(args, transectname, flightname, flightdate):
             )
             src_file_ = tif_path_
 
-        if (frame_id >= 100) & (frame_id % 100 == 0 ):
+        d_id_update = 50 #100
+        if (frame_id >= d_id_update) & (frame_id % d_id_update == 0 ):
             print('###############')
             print(src_file_)
-            print('ref id:', frame_id-99) 
+            print('ref id:', frame_id- (d_id_update-1)) 
             correction_opk_copy = correction_opk.copy()
             oc, pc, kc =  ( np.array(correction_opk) + offset[1] ) / scale[1]
-            result, params_ = optimizeAlignement_telops_f1.run_opt_correction(frame_id-99, src_file_, transectname, flightname, flightdate, oc, pc, kc)
+            result, params_ = optimizeAlignement_telops_f1.run_opt_correction(frame_id-(d_id_update-1), src_file_, transectname, flightname, flightdate, oc, pc, kc, maskPlume=maskPlume)
 
             [oc,pc,kc] = result.x
             #xc,yc,zc = 0.5,0.5,0.5
@@ -189,6 +195,12 @@ def orthro(args, transectname, flightname, flightdate):
             correction_opk = (np.array([oc,pc,kc]) * scale[1]) - offset[1]
             print('modif of correction:')
             print(np.array(correction_opk)-np.array(correction_opk_copy))
+            correction_opk_arr.append(correction_opk)
+            try:
+                time_ =datetime.datetime.strptime(metadata['Time'], "%Y-%m-%d %H:%M:%S.%f")
+            except: 
+                time_ = datetime.datetime.strptime( metadata['Time'], "%Y-%m-%d %H:%M:%S")
+            correction_opk_time_arr.append(time_)
             print('###############')
             ##plot
             #params_['flag_plot'] = True
@@ -234,6 +246,12 @@ def orthro(args, transectname, flightname, flightdate):
             dst.write(img)
             dst.update_tags(**existing_meta)
 
+    #save correction history
+    df = pd.DataFrame({
+                    "time": correction_opk_time_arr,
+                    "correction_opk": correction_opk_arr
+                     })                                    
+    df.to_csv(f"{indir}/correction_opk_{transectname}.csv", index=False)
 
     del cameras
 
@@ -346,5 +364,5 @@ if __name__ == "__main__":
     correction_opk = (np.array([oc,pc,kc]) * scale[1]) - offset[1]
 
 
-    orthro([*correction_xyz,*correction_opk], transectname, flightname, flightdate)
+    orthro([*correction_xyz,*correction_opk], transectname, flightname, flightdate, indir)
     

@@ -55,8 +55,8 @@ def get_time(fp: Path):
 if __name__ == '__main__':
 ################################
 
-    transectname = 'Sijean03'
-    filterCam=5
+    transectname = 'Sijean01'
+    filterCam=1
 
     indir = f'/data/shared/ATR42/as250026/Transects/{transectname}'
     
