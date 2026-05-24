@@ -12,6 +12,7 @@ from rasterio.errors import NotGeoreferencedWarning
 warnings.simplefilter('ignore', NotGeoreferencedWarning)
 import pdb 
 import pandas as pd 
+import geopandas as gpd 
 import math 
 
 ##################################
@@ -230,12 +231,19 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
             t_s  = float( (t  - t0) / np.timedelta64(1, 's'))
 
             def interp_val(varName, t0_s, t1_s, t_s ):
-                var0 = float(imu[varName][idx_before].data)
-                var1 = float(imu[varName][idx_after].data)
+                if type(imu) == gpd.geodataframe.GeoDataFrame:
+                    var0 = float(imu[varName][idx_before])
+                    var1 = float(imu[varName][idx_after])
+                else:
+                    var0 = float(imu[varName][idx_before].data)
+                    var1 = float(imu[varName][idx_after].data)
                 var_interp = (var1-var0)/(t1_s-t0_s) * (t_s-t0_s) + var0
                 return float(var_interp)
 
-            lat = interp_val('LATITUDE', t0_s, t1_s, t_s )
+            try: 
+                lat = interp_val('LATITUDE', t0_s, t1_s, t_s )
+            except: 
+                pdb.set_trace()
             lon = interp_val('LONGITUDE', t0_s, t1_s, t_s )
             alt = interp_val('ALTITUDE', t0_s, t1_s, t_s )
             roll = interp_val('ROLL_smooth', t0_s, t1_s, t_s )
@@ -268,9 +276,12 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
             #correction_opk = np.array([-1.,3.,-16]) # degree
             
             #apply correction 
-            xavion = -479.e-2    + correction_xyz[0]
-            yavion = 24.5e-2   + correction_xyz[1]
-            zavion = 20e-2      + correction_xyz[2]
+            #xavion = -479.e-2    + correction_xyz[0]
+            #yavion = 24.5e-2   + correction_xyz[1]
+            #zavion = 20e-2      + correction_xyz[2]
+            xavion =  correction_xyz[0]
+            yavion =  correction_xyz[1]
+            zavion =  correction_xyz[2]
             opk = np.array([orientation, position, kinematics])+correction_opk
             
             #transformation from 

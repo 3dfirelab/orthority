@@ -24,6 +24,8 @@ import rasterio
 from orthority.ortho import OrthorityWarning
 import pandas as pd 
 import datetime
+import argparse
+import importlib
 
 #homebrewed
 import imuNcOoGeojson 
@@ -122,18 +124,29 @@ def orthro(args, transectname, flightname, flightdate, indir):
     result = subprocess.run(command, capture_output=True, text=True)
     '''
     
-    imu = xr.open_dataset(indir+imufile)
+    #imu = xr.open_dataset(indir+imufile)
+    imu = gpd.read_file(indir+imufile)
+    imu = imu.dropna(subset=['latitude'])
+
+    imu = imu.rename(columns={'datetime_utc': 'time'})
+    imu = imu.rename(columns={'latitude': 'LATITUDE'})
+    imu = imu.rename(columns={'longitude': 'LONGITUDE'})
+    imu = imu.rename(columns={'altitude_m': 'ALTITUDE'})
+    imu = imu.rename(columns={'roll_deg': 'ROLL_smooth'})
+    imu = imu.rename(columns={'pitch_deg': 'PITCH_smooth'})
+    imu = imu.rename(columns={'heading_deg': 'THEAD_smooth'})
+
     #for idimg in idimgs[:1]:
     src_files =  sorted(glob.glob(f"{indirimg}/f{filtre}*.tif" ))
-    df_calib = pd.read_csv('/data/shared/ATR42/TelposDLCalib/SILEX_telops_filtre_DL_fit.csv')
+    df_calib = pd.read_csv('/home/paugam/Data/ATR_test/TelposDLCalib/SILEX_telops_filtre_DL_fit.csv')
     
     df_calib_f =    df_calib[df_calib.filtre == filtre]
     correction_opk_arr = []
     correction_opk_time_arr = []
 
-    maskPlume_file = f'/data/shared/ATR42/{flightname}/mask/plumeMask_{transectname}.gpkg'
-    maskPlume = gpd.read_file(maskPlume_file)
-
+    #maskPlume_file = f'/data/shared/ATR42/{flightname}/mask/plumeMask_{transectname}.gpkg'
+    #maskPlume = gpd.read_file(maskPlume_file)
+    maskPlume = None
     for src_file in src_files:
         if os.path.isfile(outdir+os.path.basename(src_file).replace('.tif','_ORTHO.tif')): continue
         
@@ -181,7 +194,7 @@ def orthro(args, transectname, flightname, flightdate, indir):
             src_file_ = tif_path_
 
         d_id_update = 50 #100
-        if (frame_id >= d_id_update) & (frame_id % d_id_update == 0 ):
+        if False: #(frame_id >= d_id_update) & (frame_id % d_id_update == 0 ):
             print('###############')
             print(src_file_)
             print('ref id:', frame_id- (d_id_update-1)) 
@@ -209,7 +222,7 @@ def orthro(args, transectname, flightname, flightdate, indir):
         print(correction_opk)
         print(src_file_)
         print('process imu ...')
-        imu = xr.open_dataset(indir+imufile)    
+       
         imuNcOoGeojson.imutogeojson(imu, wkdir, indirimg, flightname, correction_xyz, correction_opk, [src_file_]) 
         print('done                ') 
 
@@ -327,12 +340,38 @@ if __name__ == "__main__":
     importlib.reload(optimizeAlignement_telops_f1)
     importlib.reload(imuNcOoGeojson)
     
-    flightname = 'as250026'
-    flightdate = '20250726'
-    transectname = 'Sijean01'
-    filtre=1
-    
-    indir = f'/data/shared/ATR42/as250026/Transects/{transectname}'
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--imufile_name",
+        type=str,
+        default="safire",
+        help="IMU file name"
+    )
+    parser.add_argument(
+        "--minimizeID",
+        type=int,
+        default=3,
+        choices=[2, 3, 4],
+        help="Minimization method ID"
+    )
+    parser.add_argument(
+        "--transectName",
+        type=str,
+        default='001_320256',
+        help="transect name"
+    )
+    args = parser.parse_args()
+
+    flightname = "piper01"
+    flightdate = "20260520"
+    filtre = 1
+
+    imufile_name = args.imufile_name
+    minimizeID = args.minimizeID
+    transectname = args.transectName
+
+    indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
    
     indirimg = indir + f'/tif_f{filtre}/'
     outdir   = indir + f'/full_ortho_f{filtre}/'
@@ -344,21 +383,26 @@ if __name__ == "__main__":
     if os.path.isdir(wkdir): shutil.rmtree(wkdir)
     os.makedirs(wkdir, exist_ok=True)
 
-    imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
-    
+    #imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
+   
+    if imufile_name == 'loa':
+        imufile = '/../../safire/piper01_psbga_gpgga_sync.gpkg'
+    if imufile_name == 'safire':
+        imufile = '/../../safire/piper01_safire.gpkg'
     
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")
     warnings.filterwarnings("ignore", category=OrthorityWarning)  # show once per message
 
-    demFile =  '{:s}/../../dem/as250026_dem_1m.tif'.format(indir)
+    demFile =  '{:s}/../../dem/piper01_dem_1m.tif'.format(indir)
     
     intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
-    offset = [ np.array([.5,.5,.5]),    np.array([5,5,5]) ]
-    scale = [ np.array([1,1,1]), np.array([10,10,10,]) ]   
+    offset = [ np.array([.5,.5,.5]),    np.array([2,2,2]) ]
+    scale = [ np.array([1,1,1]), np.array([4,4,4,]) ]   
     
-    oc,pc,kc = np.load(f'resbrute1_xycopk_minimize2_{transectname}.npy',allow_pickle=True).item().x 
+    xc,yc,zc, oc,pc,kc = np.load(f'resbrute1_xycopk_minimize{minimizeID}_{transectname}_{imufile_name}.npy',allow_pickle=True).item().x 
     
-    xc,yc,zc = 0.5,0.5,0.5
+    #oc,pc,kc = np.load(f'resbrute1_xycopk_minimize2_{transectname}_{imufile_name}.npy',allow_pickle=True).item().x 
+    #xc,yc,zc = 0.5,0.5,0.5
     
     correction_xyz = (np.array([xc,yc,zc]) * scale[0]) - offset[0]
     correction_opk = (np.array([oc,pc,kc]) * scale[1]) - offset[1]

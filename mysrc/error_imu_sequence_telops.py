@@ -17,6 +17,10 @@ import importlib
 import sys
 import gc
 import functools
+from scipy.optimize import minimize
+import cv2
+import pandas as pd
+from shapely.geometry import box
 import argparse
 
 #homebrewed
@@ -403,34 +407,30 @@ def residual(args, *params):
         #atr2 = atr.rio.reproject(daRef.rio.crs)
         #del atr
         da1 = img2da4residu(rr,atr,da1Ref)
-        #da2 = img2da4residu(idimgs[1],rrh)
-        
-        #get a metric to penalize when da1 non nan are outsie da1Ref value
 
         if flag_resi == 'resi2':
             resi += float(abs((da1-da1Ref)).sum()) #+ abs((da2-da2Ref)).sum() )#+  abs((da3-daRef)).sum() + abs((da4-daRef)).sum()
        
         overlap_mask = (~da1Ref.isnull())  # or any valid domain definition
         #resi += float(abs((da1 - da1Ref)).where(overlap_mask,0.0).sum())
-        print(resi, end=' | ')
+        #print(resi, end=' | ')
         resi1 = resi 
         da1_mask = (~da1.isnull())  # or any valid domain definition
         if flag_resi == 'resi1':
             resi += float(np.abs(da1_mask.values.astype(int)-overlap_mask.values.astype(int)).sum()) 
      
-        print(resi-resi1, end=' | ')
-        if resi<10: pdb.set_trace()
+        #print(resi-resi1, end=' | ')
+        if resi<1: pdb.set_trace()
 
-        if flag_plot:
-            da1_res.append(da1)
+        da1_res.append(da1)
 
     #del da2 
     #gc.collect()
     #mem2 = psutil.virtual_memory()
     #print(mem2.used/mem1.used)
     
-    mem = psutil.virtual_memory()
-    print('{:.2f},{:.2f},{:.2f}  {:.2f},{:.2f},{:.2f} | {:.1f} || {:.1f} || {:.3f},{:.3f},{:.3f} {:d} '.format(*correction_xyz,*correction_opk, resi, mem.used/(1024 ** 3), o,p,k, iii))
+    #mem = psutil.virtual_memory()
+    #print('{:.2f},{:.2f},{:.2f}  {:.2f},{:.2f},{:.2f} | {:.1f} || {:.1f} || {:.3f},{:.3f},{:.3f} {:d} '.format(*correction_xyz,*correction_opk, resi, mem.used/(1024 ** 3), o,p,k, iii))
     
     '''snapshot = tracemalloc.take_snapshot()
     top_stats = snapshot.statistics('lineno')
@@ -439,32 +439,10 @@ def residual(args, *params):
         print(stat)
     '''
   
-    if flag_plot:
-        print(correction_xyz)
-        print(correction_opk)
-        for da1,da1Ref in zip(da1_res, da1Refs):
-            fig = plt.figure()
-            ax = plt.subplot(121)
-            (da1-da1Ref).plot(ax=ax)
-            #ax = plt.subplot(122)
-            #(da2-da2Ref).plot(ax=ax)
-            ax = plt.subplot(122)
-            da1Rs[0].isel(band=0)['band_data'].plot()
-            (da1Ref).plot(ax=ax,alpha=.5)
-            (da1).plot.contour(ax=ax,colors='k')
-            #atr.isel(band=0)['band_data'].plot(cmap='inferno',alpha=0.5)
-            #plt.figure()
-            #ax = plt.subplot(111)
-            #(da2Ref).plot(ax=ax,alpha=.5)
-            #(da2).plot.contour(ax=ax,colors='k')
-        
-        plt.show()
-        pdb.set_trace()
   
-    if not(flag_plot):
-        os.remove(extparamFile)
-        for idimg in idimgs:
-            os.remove(wkdir+f'{flightname}_{flightdate}-{idimg}_ORTHO{str_tag}.tif')
+    os.remove(extparamFile)
+    for idimg in idimgs:
+        os.remove(wkdir+f'{flightname}_{flightdate}-{idimg}_ORTHO{str_tag}.tif')
     
     del atr,da1
     iii += 1
@@ -473,14 +451,75 @@ def residual(args, *params):
 
     return float(resi)
 
+def get_shift(da1Refs, da10ris):
+    
+    ref = da1Refs[0]
+    img = da10ris[0]
+
+    ref_bounds = ref.rio.bounds()
+    img_bounds = img.rio.bounds()
+
+    ref_box = box(*ref_bounds)
+    img_box = box(*img_bounds)
+
+    overlap = ref_box.intersection(img_box)
+    if overlap.is_empty:
+        rel_overlap = 0.0
+    else:
+        rel_overlap = overlap.area / img_box.area
+
+    if rel_overlap < 0.5: 
+        return None, None 
+
+    # reproject img onto ref grid
+    img_match = img.rio.reproject_match(ref)
+
+    # now both have same:
+    # - CRS
+    # - resolution
+    # - extent
+    # - shape
+
+    # convert to numpy
+    ref_np = ref.compute().values.astype(np.float32)
+    img_np = img_match.compute().values.astype(np.float32)
+
+    # NaN handling
+    mask = np.isfinite(ref_np) & np.isfinite(img_np)
+
+    ref_np = np.where(mask, ref_np, 0)
+    img_np = np.where(mask, img_np, 0)
+
+    # normalize
+    ref_np = cv2.normalize(ref_np, None, 0, 1, cv2.NORM_MINMAX)
+    img_np = cv2.normalize(img_np, None, 0, 1, cv2.NORM_MINMAX)
+
+    warp = np.eye(2, 3, dtype=np.float32)
+
+    criteria = (
+        cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+        500,
+        1e-7
+    )
+
+    try:
+        cc, warp = cv2.findTransformECC( ref_np, img_np, warp, cv2.MOTION_TRANSLATION, criteria )
+    except: 
+        pdb.set_trace()
+
+    dx_pix = warp[0, 2]
+    dy_pix = warp[1, 2]
+
+
+    return [dx_pix, dy_pix], cc
+
 
 ##################################
 if __name__ == "__main__":
 ##################################
     import tracemalloc
     tracemalloc.start()
-    
-    parser = argparse.ArgumentParser()
+       parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--imufile_name",
@@ -495,14 +534,26 @@ if __name__ == "__main__":
         default='001_320256',
         help="transect name"
     )
-
+    parser.add_argument(
+        "--minimizeID",
+        type=int,
+        default=3,
+        help="transect name"
+    )
     args = parser.parse_args()
-    
+     
     imufile_name = args.imufile_name
     transectname = args.transectName
+    minimizeID = args.minimizeID
     
     flightname = 'piper01'
     flightdate = '20260520'
+    delta_img = 25
+    #imufile_name = 'loa'
+    #minimizeID = 3 # 2, 3, 4
+    #imufile_name = 'safire'
+    #minimizeID = 4 # 2, 3, 4
+
     indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
     
     outdir = indir + 'io/'
@@ -516,12 +567,8 @@ if __name__ == "__main__":
     if imufile_name == 'safire':
         imufile = '/../../safire/piper01_safire.gpkg'
     
-    #imufile = '/../../safire/piper01_safire.gpkg'
-    #imufile_name = 'safire'
 
     imgdirname = 'tif_f1/'
-    #idimgs = [62,1009]   
-    idimgs = [62]   
     demFile =  '{:s}/../../dem/{:s}_dem_1m.tif'.format(indir,flightname)
 
     indirimg = indir + '{:s}/'.format(imgdirname)
@@ -530,16 +577,9 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")         
 
     intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
-
-    rr = 3
-    da1Rs =  [xr.open_dataset(f"{indir}/tif_f1_ortho/f1-{idimg:09d}_modified.tif").rio.reproject(32631) for idimg in idimgs]
-    da1Refs = [img2da4residu(rr,da1R,da1R,flag_ref=True) for da1R in da1Rs ]
-     
-    #offset = [ np.array([.5,.5,.5]),    np.array([5,5,5]) ]
-    #scale = [ np.array([1,1,1]), np.array([10,10,10,]) ]
-    
-    offset = [ np.array([3,3,3]),    np.array([2,2,2]) ]
-    scale = [ np.array([6,6,6]), np.array([4,4,4]) ]
+        
+    offset = [ np.array([.5,.5,.5]),    np.array([2,2,2]) ]
+    scale = [ np.array([1,1,1]), np.array([4,4,4]) ]
 
     #imu = xr.open_dataset(indir+imufile)
     imu = gpd.read_file(indir+imufile)
@@ -553,110 +593,86 @@ if __name__ == "__main__":
     imu = imu.rename(columns={'pitch_deg': 'PITCH_smooth'})
     imu = imu.rename(columns={'heading_deg': 'THEAD_smooth'})
 
-    if False: 
-        #popt = np.array([ -0.93871095,  -1.06893665,  -1.03742455,  -1.56363453, 2.64046062, -15.92574779])
-        #popt = np.array([-0.96509656,  -1.02242933,  -1.02461382,  -1.54239457, 2.6027513 , -15.99057932])
-        #popt = np.array([0.5,0.5,0.5 ])
-        popt = np.load(f'resbrute1_xycopk_minimize3_{transectname}_{imufile_name}.npy',allow_pickle=True).item().x
-        print( popt )
-        #xc,yc,zc,o,p,k = popt.item().x
-        #correction_opk = (np.array([o,p,k])-offset[1])    / scale[1]
-        #correction_xyz = (np.array([xc,yc,zc])-offset[0]) / scale[0]
-        #popt = [*correction_xyz, *correction_xyz]
-        params = [ {'offset':offset,'scale':scale}, True,'xyzopk', imu, [0.5,0.5,0.5] , 'resi2']
-        residual( popt , params )
-        #residual( popt.item().x , params)
-        sys.exit()
-    xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.5,0.5,0.5
+
+    popt = np.load(f'resbrute1_xycopk_minimize{minimizeID}_{transectname}_{imufile_name}.npy', allow_pickle=True).item().x
+   
+    arr = []
+    for idimg_ in range(52,912,20):  
+
+        idimgs = [idimg_]
+        rr = 3
+        idimg_ref = idimgs[0] - delta_img
+        da1Rs =  [xr.open_dataset(f"{indir}/full_ortho_f1/f1-{idimg_ref:09d}_expcorr_ORTHO.tif").rio.reproject(32631) ]
+        da1Refs = [img2da4residu(rr,da1R,da1R,flag_ref=True) for da1R in da1Rs ]
+        
+        da10s =  [xr.open_dataset(f"{indir}/full_ortho_f1/f1-{idimg_:09d}_expcorr_ORTHO.tif").rio.reproject(32631) ]
+        da10ris = [img2da4residu(rr,da10,da10,flag_ref=True) for da10 in da10s ]
+
+        shift, cc = get_shift(da1Refs, da10ris)
+        if shift is None: 
+            arr.append( [idimgs[0], idimg_ref, None, None] )
+            continue
+        
+        params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu, [], 'resi2' ]
+
+        # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
+        x0 = np.array([*popt])   # assuming resbrutef is a list or array of length 6
+
+        # Construct an initial simplex: one vertex is x0, others are small perturbations
+        step_size = 0.05  # Increase this if your function is too flat at the start
+        n = len(x0)
+        initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
+
+        # Perform optimization using Nelder-Mead with the custom simplex
+        result = minimize(
+            fun=residual,
+            x0=x0,
+            args=tuple(params),  # your additional parameters to residual()
+            method='Nelder-Mead',
+            options={
+                'initial_simplex': initial_simplex,
+                'xatol': 0.01,
+                'fatol': 0.1,
+                'disp': False,
+                'maxiter': 1000  # optional: increase if needed
+            }
+        )
+
+        print(idimg_)
+        print(x0)
+        print(result.x)
+        print(shift)
+        print('-----')
+        arr.append( [idimgs[0], idimg_ref, result.x-x0, shift] )
+        
+
+    df = pd.DataFrame(
+        arr,
+        columns=[
+            "id_img",
+            "id_img_ref",
+            "diff_6d",
+            "pixel_shift"
+        ]
+    )
+    df = df[df[pixel_shift].notnull()]
+
+    df[["diff_x", "diff_y", "diff_z","diff_o","diff_p","diff_k", ]] = pd.DataFrame(
+        df["diff_6d"].tolist(),
+        index=df.index
+    )
+    df = df.drop(columns=["diff_6d"])
     
-    resbrutef =  [oc,pc,kc]
-    
-    from scipy.optimize import minimize
-    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi1' ]
+    df.to_csv(f"error_imu_sequence_piper01_{transectname}_{imufile_name}_deltaImg{delta_img}_mID{minimizeID}.csv", index=False)
 
-    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
-    x0 = np.array(resbrutef)  # assuming resbrutef is a list or array of length 6
-
-    # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.9  # Increase this if your function is too flat at the start
-    n = len(x0)
-    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
-
-    # Perform optimization using Nelder-Mead with the custom simplex
-    result = minimize(
-        fun=residual,
-        x0=x0,
-        args=tuple(params),  # your additional parameters to residual()
-        method='Nelder-Mead',
-        options={
-            'initial_simplex': initial_simplex,
-            'xatol': 0.01,
-            'fatol': 0.1,
-            'disp': True,
-            'maxiter': 1000  # optional: increase if needed
-        }
-    )
-    np.save(f'resbrute1_xycopk_minimize1_{transectname}_{imufile_name}.npy',result)
-
-
-    popt = result.x
-    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi2' ]
-
-    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
-    x0 = np.array(popt)  # assuming resbrutef is a list or array of length 6
-
-    # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.3  # Increase this if your function is too flat at the start
-    n = len(x0)
-    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
-
-    # Perform optimization using Nelder-Mead with the custom simplex
-    result = minimize(
-        fun=residual,
-        x0=x0,
-        args=tuple(params),  # your additional parameters to residual()
-        method='Nelder-Mead',
-        options={
-            'initial_simplex': initial_simplex,
-            'xatol': 0.01,
-            'fatol': 0.1,
-            'disp': True,
-            'maxiter': 1000  # optional: increase if needed
-        }
-    )
-
-    np.save(f'resbrute1_xycopk_minimize2_{transectname}_{imufile_name}.npy',result)
-
-
-
-    popt = result.x
-    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu, [], 'resi2' ]
-
-    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
-    x0 = np.array([0.5, 0.5, 0.5, *popt])   # assuming resbrutef is a list or array of length 6
-
-    # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.05  # Increase this if your function is too flat at the start
-    n = len(x0)
-    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
-
-    # Perform optimization using Nelder-Mead with the custom simplex
-    result = minimize(
-        fun=residual,
-        x0=x0,
-        args=tuple(params),  # your additional parameters to residual()
-        method='Nelder-Mead',
-        options={
-            'initial_simplex': initial_simplex,
-            'xatol': 0.01,
-            'fatol': 0.1,
-            'disp': True,
-            'maxiter': 1000  # optional: increase if needed
-        }
-    )
-
-    np.save(f'resbrute1_xycopk_minimize3_{transectname}_{imufile_name}.npy',result)
-
-
-
-
+    fig = plt.figure()
+    ax = plt.subplot(121)
+    df.diff_x.plot(ax=ax, label='diff_x')
+    df.diff_y.plot(ax=ax, label='diff_y')
+    df.diff_z.plot(ax=ax, label='diff_z')
+    ax = plt.subplot(122)
+    df.diff_o.plot(ax=ax, label='diff_o')
+    df.diff_p.plot(ax=ax, label='diff_p')
+    df.diff_k.plot(ax=ax, label='diff_k')
+    fig.savefig(f"error_imu_sequence_piper01_{transectname}_{imufile_name}_deltaImg{delta_img}_mID{minimizeID}.png")
+    plt.close(fig)
