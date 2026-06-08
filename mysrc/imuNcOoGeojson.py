@@ -15,6 +15,11 @@ import pandas as pd
 import geopandas as gpd 
 import math 
 
+LEGACY_POSE_MODEL = "legacy_coupled"
+SEPARATE_POSE_MODEL = "separate_lever_arm_boresight"
+DEFAULT_POSE_MODEL = SEPARATE_POSE_MODEL
+SUPPORTED_POSE_MODELS = {LEGACY_POSE_MODEL, SEPARATE_POSE_MODEL}
+
 ##################################
 def append_to_dict(file_name, xyz, opk, latlonalt, data_dict):
     # Create the feature data for the file
@@ -97,20 +102,12 @@ def rotation_matrix_to_opk(R):
 
 
 def rpy_to_rotation_matrix(roll, pitch, yaw):
-    """
-    Converts euler angles to a rotation matrix
-    """
+    """Return the body-to-world rotation for roll, pitch and yaw in degrees."""
     roll, pitch, yaw = np.radians(roll), np.radians(pitch), np.radians(yaw)
-    size = (3,3)
-    RX = np.zeros(size)
-    RY = np.zeros(size)
-    RZ = np.zeros(size)
-    
-    # convert from array to matrix
-    RX = np.matrix(RX)
-    RY = np.matrix(RY)
-    RZ = np.matrix(RZ)
-    
+    RX = np.zeros((3, 3))
+    RY = np.zeros((3, 3))
+    RZ = np.zeros((3, 3))
+
     c = np.cos(yaw)
     s = np.sin(yaw)
     RZ[0,0] = c
@@ -138,8 +135,67 @@ def rpy_to_rotation_matrix(roll, pitch, yaw):
     # combine to final rotation matrix
     return RZ@RY@RX
 
+
+def camera_pose_from_imu(
+    imu_xyz,
+    imu_rpy,
+    lever_arm_xyz,
+    boresight_opk,
+    pose_model=DEFAULT_POSE_MODEL,
+):
+    """Return camera XYZ and OPK for the selected pose model.
+
+    ``legacy_coupled`` reproduces the previous implementation: corrected OPK
+    rotates the lever arm and therefore changes camera XYZ.
+
+    ``separate_lever_arm_boresight`` rotates the lever arm only with IMU body
+    attitude, while boresight changes camera orientation independently.
+    """
+    imu_xyz = np.asarray(imu_xyz, dtype=float)
+    lever_arm_xyz = np.asarray(lever_arm_xyz, dtype=float)
+    boresight_opk = np.asarray(boresight_opk, dtype=float)
+    if imu_xyz.shape != (3,):
+        raise ValueError("imu_xyz must contain exactly X, Y and Z.")
+    if lever_arm_xyz.shape != (3,):
+        raise ValueError("lever_arm_xyz must contain exactly X, Y and Z.")
+    if boresight_opk.shape != (3,):
+        raise ValueError("boresight_opk must contain omega, phi and kappa.")
+    if pose_model not in SUPPORTED_POSE_MODELS:
+        raise ValueError(
+            f"Unknown pose_model '{pose_model}'. Expected one of "
+            f"{sorted(SUPPORTED_POSE_MODELS)}."
+        )
+
+    world_from_body = rpy_to_rotation_matrix(*imu_rpy)
+    body_opk = np.asarray(rotation_matrix_to_opk(world_from_body), dtype=float)
+
+    if pose_model == LEGACY_POSE_MODEL:
+        camera_opk = body_opk + boresight_opk
+        world_from_camera = rpy_to_rotation_matrix(*camera_opk)
+        camera_xyz = imu_xyz + world_from_camera @ lever_arm_xyz
+        return camera_xyz, camera_opk
+
+    body_from_camera = rpy_to_rotation_matrix(*boresight_opk)
+
+    camera_xyz = imu_xyz + world_from_body @ lever_arm_xyz
+    world_from_camera = world_from_body @ body_from_camera
+    camera_opk = np.asarray(
+        rotation_matrix_to_opk(world_from_camera), dtype=float
+    )
+    return camera_xyz, camera_opk
+
 #####################################
-def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_opk, frames=None, str_tag=''):
+def imutogeojson(
+    imu,
+    outdir,
+    indirimg,
+    flightname,
+    correction_xyz,
+    correction_opk,
+    frames=None,
+    str_tag='',
+    pose_model=DEFAULT_POSE_MODEL,
+):
  
     if frames is None:
         frames = sorted(glob.glob(indirimg+'*.tif'))
@@ -147,7 +203,7 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
     crs = pyproj.CRS.from_epsg(32631)
     data_dict = {
                 "type": "FeatureCollection",
-                "world_crs":  crs.to_proj4(),
+                "world_crs": crs.to_string(),
                 "features": []
                 }
     # Define the coordinate systems
@@ -230,6 +286,8 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
             t1_s = float( (t1 - t0) / np.timedelta64(1, 's'))
             t_s  = float( (t  - t0) / np.timedelta64(1, 's'))
 
+            #print('## time ##', idx_before,idx_after, t0_s, t_s, t1_s)
+
             def interp_val(varName, t0_s, t1_s, t_s ):
                 if type(imu) == gpd.geodataframe.GeoDataFrame:
                     var0 = float(imu[varName][idx_before])
@@ -259,33 +317,23 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
             #print( lat, lon, alt)
             #print( roll, pitch, yaw)
             
-            R = rpy_to_rotation_matrix(roll, pitch, yaw)
-            omega, phi, kappa = rotation_matrix_to_opk(R)
-            #print( omega, phi, kappa)
-           
-            position = phi
-            orientation = omega
-            #kinematics = (float(imu.THEAD[idx].data) - 180) % 360
-            kinematics = kappa
             #xyz
             Ximu, Yimu = transformer.transform(lon, lat)
             Zimu = alt
-    
-            #correction in the arcraft referentiel
-            #correction_xyz = np.array([0.,0.,0.]) # correction aricraft ref
-            #correction_opk = np.array([-1.,3.,-16]) # degree
-            
-            #apply correction 
-            #xavion = -479.e-2    + correction_xyz[0]
-            #yavion = 24.5e-2   + correction_xyz[1]
-            #zavion = 20e-2      + correction_xyz[2]
-            xavion =  correction_xyz[0]
-            yavion =  correction_xyz[1]
-            zavion =  correction_xyz[2]
-            opk = np.array([orientation, position, kinematics])+correction_opk
-            
-            #transformation from 
-            xyz = transform_point(xavion, yavion, zavion, Ximu, Yimu, Zimu, opk[0], opk[1], opk[2])
+
+            #nominal_lever_arm = np.array([-4.79, 0.245, 0.20])
+            #PIPER
+            nominal_lever_arm = np.array([0., 0., 0.])
+            lever_arm = nominal_lever_arm + np.asarray(
+                correction_xyz, dtype=float
+            )
+            xyz, opk = camera_pose_from_imu(
+                [Ximu, Yimu, Zimu],
+                [roll, pitch, yaw],
+                lever_arm,
+                correction_opk,
+                pose_model=pose_model,
+            )
  
             lon, alt = transformer_inv.transform(*xyz[:2])
             alt = xyz[-1]
@@ -296,7 +344,7 @@ def imutogeojson( imu, outdir, indirimg, flightname, correction_xyz, correction_
             append_to_dict(
                 os.path.basename(frame).split('.ti')[0],
                 list(xyz),  # Example xyz coordinates
-                list(3.14/180*opk),  # Example opk # conversion to radian
+                list(np.radians(opk)),
                 [lon,lat,alt],  # Example xyz coordinates
                 data_dict
             )
@@ -342,4 +390,3 @@ if __name__ == "__main__":
 
     imutogeojson( indir, outdir, imufile, indirimg, flightname, correction_xyz, correction_opk)
     
-

@@ -26,12 +26,14 @@ import pandas as pd
 import datetime
 import argparse
 import importlib
+import socket
+import yaml
 
 #homebrewed
 import imuNcOoGeojson 
 #import optimizeAlignement_telops_function 
 #importlib.reload(optimizeAlignement_telops_function)
-import optimizeAlignement_telops_f1
+#import optimizeAlignement_telops_f1
 
 
 #################################################
@@ -98,14 +100,30 @@ def affine(x, m, p):
 
 
 #################################################
-def orthro(args, transectname, flightname, flightdate, indir):
+def orthro(
+    args,
+    transectname,
+    flightname,
+    flightdate,
+    indir,
+    indirimg,
+    outdir,
+    wkdir,
+    imufile,
+    demFile,
+    intparamFile,
+    filtre=1,
+    pose_model=imuNcOoGeojson.DEFAULT_POSE_MODEL,
+):
    
     x, y, z = args[:3]
     o, p, k = args[3:]
 
     correction_opk = np.array([o,p,k])
     correction_xyz = np.array([x,y,z])
-    src_files =  sorted(glob.glob(f"{indirimg}/f{filtre}*.tif" ))
+    src_files = sorted(glob.glob(f"{indirimg}/f{filtre}*.tif"))
+    if not src_files:
+        raise ValueError(f"No input images found in {indirimg}")
 
 
    
@@ -125,7 +143,7 @@ def orthro(args, transectname, flightname, flightdate, indir):
     '''
     
     #imu = xr.open_dataset(indir+imufile)
-    imu = gpd.read_file(indir+imufile)
+    imu = gpd.read_file(imufile)
     imu = imu.dropna(subset=['latitude'])
 
     imu = imu.rename(columns={'datetime_utc': 'time'})
@@ -137,10 +155,16 @@ def orthro(args, transectname, flightname, flightdate, indir):
     imu = imu.rename(columns={'heading_deg': 'THEAD_smooth'})
 
     #for idimg in idimgs[:1]:
-    src_files =  sorted(glob.glob(f"{indirimg}/f{filtre}*.tif" ))
-    df_calib = pd.read_csv('/home/paugam/Data/ATR_test/TelposDLCalib/SILEX_telops_filtre_DL_fit.csv')
-    
-    df_calib_f =    df_calib[df_calib.filtre == filtre]
+    src_files = sorted(glob.glob(f"{indirimg}/f{filtre}*.tif"))
+    df_calib_f = None
+    if filtre >= 3:
+        calibration_csv = (
+            Path(indir).parents[1]
+            / "TelposDLCalib"
+            / "SILEX_telops_filtre_DL_fit.csv"
+        )
+        df_calib = pd.read_csv(calibration_csv)
+        df_calib_f = df_calib[df_calib.filtre == filtre]
     correction_opk_arr = []
     correction_opk_time_arr = []
 
@@ -194,6 +218,7 @@ def orthro(args, transectname, flightname, flightdate, indir):
             src_file_ = tif_path_
 
         d_id_update = 50 #100
+        '''
         if False: #(frame_id >= d_id_update) & (frame_id % d_id_update == 0 ):
             print('###############')
             print(src_file_)
@@ -218,12 +243,16 @@ def orthro(args, transectname, flightname, flightdate, indir):
             ##plot
             #params_['flag_plot'] = True
             #optimizeAlignement_telops_f1.residual( result.x , params_ )
-
+        '''
         print(correction_opk)
         print(src_file_)
         print('process imu ...')
        
-        imuNcOoGeojson.imutogeojson(imu, wkdir, indirimg, flightname, correction_xyz, correction_opk, [src_file_]) 
+        imuNcOoGeojson.imutogeojson(
+            imu, wkdir, indirimg, flightname,
+            correction_xyz, correction_opk, [src_file_],
+            pose_model=pose_model,
+        )
         print('done                ') 
 
         str_tag = ''
@@ -337,76 +366,118 @@ def to_epsg4326_inplace(path, compress="LZW"):
 ##################################
 if __name__ == "__main__":
 ##################################
-    importlib.reload(optimizeAlignement_telops_f1)
+    #importlib.reload(optimizeAlignement_telops_f1)
     importlib.reload(imuNcOoGeojson)
     
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--imufile_name",
-        type=str,
-        default="safire",
-        help="IMU file name"
+        "--config",
+        type=Path,
+        required=True,
+        help="Dataset YAML, for example config/config-cimenterie-01.yaml.",
     )
     parser.add_argument(
-        "--minimizeID",
-        type=int,
-        default=3,
-        choices=[2, 3, 4],
-        help="Minimization method ID"
-    )
-    parser.add_argument(
-        "--transectName",
-        type=str,
-        default='001_320256',
-        help="transect name"
+        "--calibration",
+        type=Path,
+        default=None,
+        help=(
+            "JSON produced by calibrate_orthority_imu.py. When supplied, its "
+            "correction_xyz and correction_opk override the YAML calibration."
+        ),
     )
     args = parser.parse_args()
 
-    flightname = "piper01"
-    flightdate = "20260520"
-    filtre = 1
+    with args.config.open("r", encoding="utf-8") as config_file:
+        cfg = yaml.safe_load(config_file)
 
-    imufile_name = args.imufile_name
-    minimizeID = args.minimizeID
-    transectname = args.transectName
+    flightname = cfg["flightname"]
+    flightdate = cfg["flightdate"]
+    transectname = cfg["extractionName"]
+    filtre = int(cfg.get("filter", 1))
+    data_root = Path(cfg["dirTelops"]).expanduser().resolve().parent
+    indir = data_root / "Transects" / transectname
 
-    indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
-   
-    indirimg = indir + f'/tif_f{filtre}/'
-    outdir   = indir + f'/full_ortho_f{filtre}/'
+    def config_path(key):
+        if key not in cfg:
+            raise ValueError(f"Missing required configuration key: {key}")
+        path = Path(cfg[key]).expanduser()
+        if not path.is_absolute():
+            path = args.config.resolve().parent / path
+        return path.resolve()
+
+    indirimg = config_path("input_dir")
+    outdir = config_path("output_dir")
+    imufile_name = cfg.get("imufile_name", "safire")
+    imufile = data_root / "safire" / f"{flightname}_{imufile_name}.gpkg"
+    demFile = data_root / "dem" / f"{flightname}_dem_1m.tif"
+    intparamFile = indir / "io" / f"{flightname}_int_param.yaml"
+    calibration_path = args.calibration
+    if calibration_path is None and cfg.get("calibration"):
+        calibration_path = config_path("calibration")
+
+    for label, path in (
+        ("input directory", indirimg),
+        ("IMU", imufile),
+        ("DEM", demFile),
+        ("interior parameters", intparamFile),
+    ):
+        if not path.exists():
+            raise FileNotFoundError(f"{label} not found: {path}")
+
     if os.path.isdir(outdir):
         shutil.rmtree(outdir)
     os.makedirs(outdir, exist_ok=True)
-    
-    wkdir = '/tmp/paugam/orthority_wkdir/'
+
+    wkdir = Path(f"/tmp/orthority_wkdir_ortho_{transectname}_{imufile_name}")
     if os.path.isdir(wkdir): shutil.rmtree(wkdir)
     os.makedirs(wkdir, exist_ok=True)
-
-    #imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
-   
-    if imufile_name == 'loa':
-        imufile = '/../../safire/piper01_psbga_gpgga_sync.gpkg'
-    if imufile_name == 'safire':
-        imufile = '/../../safire/piper01_safire.gpkg'
     
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")
     warnings.filterwarnings("ignore", category=OrthorityWarning)  # show once per message
 
-    demFile =  '{:s}/../../dem/piper01_dem_1m.tif'.format(indir)
-    
-    intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
-    offset = [ np.array([.5,.5,.5]),    np.array([2,2,2]) ]
-    scale = [ np.array([1,1,1]), np.array([4,4,4,]) ]   
-    
-    xc,yc,zc, oc,pc,kc = np.load(f'resbrute1_xycopk_minimize{minimizeID}_{transectname}_{imufile_name}.npy',allow_pickle=True).item().x 
-    
-    #oc,pc,kc = np.load(f'resbrute1_xycopk_minimize2_{transectname}_{imufile_name}.npy',allow_pickle=True).item().x 
-    #xc,yc,zc = 0.5,0.5,0.5
-    
-    correction_xyz = (np.array([xc,yc,zc]) * scale[0]) - offset[0]
-    correction_opk = (np.array([oc,pc,kc]) * scale[1]) - offset[1]
+    if calibration_path:
+        with calibration_path.open("r", encoding="utf-8") as calibration_file:
+            calibration = json.load(calibration_file)
+        pose_model = calibration.get("pose_model")
+        if pose_model not in imuNcOoGeojson.SUPPORTED_POSE_MODELS:
+            raise ValueError(
+                f"{calibration_path} has no supported pose_model. "
+                "Re-run the calibration."
+            )
+        try:
+            correction_xyz = np.asarray(calibration["correction_xyz"], dtype=float)
+            correction_opk = np.asarray(calibration["correction_opk"], dtype=float)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"{calibration_path} has no valid correction_xyz/correction_opk."
+            ) from error
+        if correction_xyz.shape != (3,) or correction_opk.shape != (3,):
+            raise ValueError("Calibration corrections must each contain 3 values.")
+    else:
+        pose_model = imuNcOoGeojson.DEFAULT_POSE_MODEL
+        correction_xyz = np.zeros(3)
+        correction_opk = np.zeros(3)
+        print("No calibration specified; using zero XYZ/OPK correction.")
 
-
-    orthro([*correction_xyz,*correction_opk], transectname, flightname, flightdate, indir)
+    print("input:", indirimg)
+    print("output:", outdir)
+    print("correction_xyz:", correction_xyz)
+    print("correction_opk:", correction_opk)
+    print("pose_model:", pose_model)
+    orthro(
+        [*correction_xyz, *correction_opk],
+        transectname,
+        flightname,
+        flightdate,
+        str(indir),
+        str(indirimg),
+        str(outdir) + os.sep,
+        str(wkdir),
+        str(imufile),
+        str(demFile),
+        str(intparamFile),
+        filtre=filtre,
+        pose_model=pose_model,
+    )
     
