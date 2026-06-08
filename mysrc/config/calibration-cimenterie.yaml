@@ -1,0 +1,38 @@
+# One shared IMU/camera correction is optimized over every pair below.
+flight_name: as250018
+imu: /home/paugam/Data/ATR42/as250018/safire/as250018_safire_clipped.gpkg
+int_param: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/io/as250018_int_param.yaml
+dem: /home/paugam/Data/ATR42/as250018/dem/as250018_dem_1m.tif
+output: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/imu_camera_calibration.json
+work_dir: /tmp/orthority_imu_calibration_cimenterie01
+pose_model: separate_lever_arm_boresight
+
+# Physical initial values and bounds.
+initial_xyz: [0.0, 0.0, 0.0]
+initial_opk: [0.0, 0.0, 0.0]
+initial_step_xyz: [0.5, 0.5, 0.5]
+initial_step_opk: [0.5, 0.5, 0.5]
+# Optimize the lever-arm and boresight corrections jointly.
+optimize_parameters: [x, y, z, omega, phi, kappa]
+xyz_bounds:
+  - [-50.0, 50.0]
+  - [-50.0, 50.0]
+  - [-50.0, 50.0]
+opk_bounds:
+  - [-5.0, 5.0]
+  - [-5.0, 5.0]
+  - [-5.0, 5.0]
+
+max_dimension: 2048
+max_iterations: 500
+overlap_penalty: 0.5
+parameter_tolerance: 0.001
+cost_tolerance: 0.0001
+
+# Keep one item for single-image calibration; add items for multi-image calibration.
+pairs:
+  - image: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/tif_f1/f1-000000001.tif
+    reference: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/tif_f1_ortho/f1-000000001_modified.tif
+    image_band: 1
+    reference_band: 1
+    weight: 1.0

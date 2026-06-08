@@ -1,0 +1,58 @@
+# One shared IMU/camera correction is optimized over every pair below.
+flight_name: az260002
+imu: /home/paugam/Data/PIPER/az260002/safire/az260002_safire.gpkg
+int_param: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/io/az260002_int_param.yaml
+dem: /home/paugam/Data/PIPER/az260002/dem/az260002_dem_1m.tif
+output: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration.json
+work_dir: /tmp/orthority_imu_calibration_001
+pose_model: separate_lever_arm_boresight  #separate_lever_arm_boresight or legacy_coupled
+
+# Physical initial values and bounds.
+initial_xyz: [0.0, 0.0, 0.0]
+initial_opk: [0.0, 0.0, 0.0]
+initial_step_xyz: [0.5, 0.5, 0.5]
+initial_step_opk: [0.05, 0.05, 0.05]
+optimize_parameters: [x, y, z, omega, phi, kappa]
+starting_corrections:
+  - xyz: [0.0, 0.0, 0.0]
+    opk: [0.0, 0.0, 0.0]
+#  - xyz: [0.34, 0.48, 0.25]
+#    opk: [-0.08, 0.05, 0.08]
+#  - xyz: [0.0, 0.0, 0.0]
+#    opk: [-0.08, 0.0, 0.0]
+#  - xyz: [0.0, 0.0, 0.0]
+#    opk: [0.0, 0.0, -0.08]
+xyz_bounds:
+  - [-9.0, 9.0]
+  - [-9.0, 9.0]
+  - [-9.0, 9.0]
+opk_bounds:
+  - [-3., 3.]
+  - [-3., 3.]
+  - [-3., 3.]
+
+max_dimension: 2048
+screening_iterations: 20
+# 99 Sobol starts plus the configured starting correction = 100 total.
+# Screening runtime grows approximately linearly with this value.
+screening_samples: 99
+screening_seed: 42
+# Run the complete optimization from the lowest screening costs.
+full_optimization_starts: 10
+max_iterations: 300
+overlap_penalty: 0.5
+parameter_tolerance: 0.001
+cost_tolerance: 0.0001
+
+# Keep one item for single-image calibration; add items for multi-image calibration.
+pairs:
+  - image: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000062.tif
+    reference: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000062_modified.tif
+    image_band: 1
+    reference_band: 1
+    weight: 1.0
+  - image: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000001009.tif
+    reference: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000001009_modified.tif
+    image_band: 1
+    reference_band: 1
+    weight: 1.0

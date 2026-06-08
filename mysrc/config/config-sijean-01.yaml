@@ -1,0 +1,8 @@
+dirTelops: '/data/shared/ATR42/as250026/telops'
+extractionName: 'Sijean01'
+flightname: 'SILEX_test001'
+start_FrameID: 805960
+end_FrameID: 824985
+start_dt: null
+end_dt: null
+dt_period: 0.1

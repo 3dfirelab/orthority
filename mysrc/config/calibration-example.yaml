@@ -1,0 +1,35 @@
+# One shared IMU/camera correction is optimized over every pair below.
+flight_name: piper01
+imu: /path/to/piper01_safire.gpkg
+int_param: /path/to/io/piper01_int_param.yaml
+dem: /path/to/dem/piper01_dem_1m.tif
+output: imu_camera_calibration.json
+work_dir: /tmp/orthority_imu_calibration
+
+# Physical initial values and bounds.
+initial_xyz: [0.0, 0.0, 0.0]
+initial_opk: [0.0, 0.0, 0.0]
+initial_step_xyz: [0.5, 0.5, 0.5]
+initial_step_opk: [0.5, 0.5, 0.5]
+xyz_bounds:
+  - [-10.0, 10.0]
+  - [-10.0, 10.0]
+  - [-10.0, 10.0]
+opk_bounds:
+  - [-20.0, 20.0]
+  - [-20.0, 20.0]
+  - [-30.0, 30.0]
+
+max_dimension: 2048
+max_iterations: 300
+overlap_penalty: 0.5
+parameter_tolerance: 0.001
+cost_tolerance: 0.0001
+
+# Keep one item for single-image calibration; add items for multi-image calibration.
+pairs:
+  - image: /path/to/tif_f1/f1-000000001.tif
+    reference: /path/to/tif_f1_ortho/f1-000000001_modified.tif
+    image_band: 1
+    reference_band: 1
+    weight: 1.0

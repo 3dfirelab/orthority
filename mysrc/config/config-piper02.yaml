@@ -1,0 +1,33 @@
+dirTelops: '/home/paugam/Data/PIPER/az260002/telops'
+extractionName: '002'
+flightname: 'az260002'
+flightdate: 20250710
+start_FrameID: 7436606 
+end_FrameID: 7455542
+start_dt: null
+end_dt: null
+dt_period: 0.1
+idimgs: [1]
+filter: 1
+imufile_name: 'safire'
+calibration: '/home/paugam/Data/PIPER/az260002/Transects/001/imu_camera_calibration.json'
+input_dir: '/home/paugam/Data/PIPER/az260002/Transects/002/tif_f1'
+output_dir: '/home/paugam/Data/PIPER/az260002/Transects/002/full_ortho_f1'
+
+# Local IMU drift estimation.
+drift_input_dir: '/home/paugam/Data/PIPER/az260002/Transects/002/tif_f1_subset'
+drift_reference_dir: '/home/paugam/Data/PIPER/az260002/Transects/002/full_ortho_f1_subset'
+drift_output_dir: '/home/paugam/Data/PIPER/az260002/Transects/002/imu_drift_subset'
+drift_pair_separation: 10
+drift_window_step: 10
+drift_max_iterations: 150
+drift_max_dimension: 1024
+drift_xyz_range: [5.0, 5.0, 5.0]
+drift_opk_range: [2.0, 2.0, 2.0]
+drift_initial_step_xyz: [0.25, 0.25, 0.25]
+drift_initial_step_opk: [0.1, 0.1, 0.1]
+drift_parameter_tolerance: 0.001
+drift_cost_tolerance: 0.0001
+drift_overlap_penalty: 0.5
+drift_ecc_iterations: 200
+drift_ecc_epsilon: 0.000001
