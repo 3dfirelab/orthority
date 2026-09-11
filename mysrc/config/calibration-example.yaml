@@ -6,22 +6,40 @@ dem: /path/to/dem/piper01_dem_1m.tif
 output: imu_camera_calibration.json
 work_dir: /tmp/orthority_imu_calibration
 
-# Physical initial values and bounds.
+# Initial physical correction. Bounds below are offsets around this correction.
 initial_xyz: [0.0, 0.0, 0.0]
 initial_opk: [0.0, 0.0, 0.0]
 initial_step_xyz: [0.5, 0.5, 0.5]
 initial_step_opk: [0.5, 0.5, 0.5]
+# Choose one optimization mode:
+optimize_parameters: [omega, phi, kappa]
+# optimize_parameters: [x, y, z, omega, phi, kappa]
 xyz_bounds:
+  # Relative offsets from initial_xyz.
   - [-10.0, 10.0]
   - [-10.0, 10.0]
   - [-10.0, 10.0]
 opk_bounds:
+  # Relative offsets from initial_opk.
   - [-20.0, 20.0]
   - [-20.0, 20.0]
   - [-30.0, 30.0]
 
 max_dimension: 2048
+# Use differential evolution for a broad scan, then Nelder-Mead for refinement.
+# The population size is rounded up internally for the Sobol initialization.
+global_optimizer: differential_evolution
+global_iterations: 20
+global_population: 5
+global_tolerance: 0.01
+global_mutation: [0.5, 1.0]
+global_recombination: 0.7
+screening_seed: 42
+full_optimization_starts: 1
 max_iterations: 300
+# Different-image pairs have no overlap cost above this fraction. Same-image
+# pairs always penalize symmetric footprint IoU below 1 to match perimeters.
+minimum_overlap: 0.5
 overlap_penalty: 0.5
 parameter_tolerance: 0.001
 cost_tolerance: 0.0001

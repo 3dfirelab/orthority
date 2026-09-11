@@ -22,6 +22,7 @@ import cv2
 import pandas as pd
 from shapely.geometry import box
 import argparse
+import socket
 
 #homebrewed
 import imuNcOoGeojson  
@@ -519,7 +520,7 @@ if __name__ == "__main__":
 ##################################
     import tracemalloc
     tracemalloc.start()
-       parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--imufile_name",
@@ -549,15 +550,20 @@ if __name__ == "__main__":
     flightname = 'piper01'
     flightdate = '20260520'
     delta_img = 25
+    filtre = 1
     #imufile_name = 'loa'
     #minimizeID = 3 # 2, 3, 4
     #imufile_name = 'safire'
     #minimizeID = 4 # 2, 3, 4
 
-    indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
-    
+    hostname = socket.gethostname()
+    if hostname == 'andall':
+        indir = f'/data/shared/PIPER/piper01/Transects/{transectname}_{imufile_name}'
+    if hostname == 'pc70852':
+        indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
+     
     outdir = indir + 'io/'
-    wkdir = '/tmp/orthority3/'
+    wkdir = f'/tmp/orthority_erro_{transectname}_{imufile_name}/'
     os.makedirs(wkdir, exist_ok=True)
 
     #imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
@@ -602,10 +608,10 @@ if __name__ == "__main__":
         idimgs = [idimg_]
         rr = 3
         idimg_ref = idimgs[0] - delta_img
-        da1Rs =  [xr.open_dataset(f"{indir}/full_ortho_f1/f1-{idimg_ref:09d}_expcorr_ORTHO.tif").rio.reproject(32631) ]
+        da1Rs =  [xr.open_dataset(f"{indir}/full_ortho_f{filtre}_mID{minimizeID}/f1-{idimg_ref:09d}_expcorr_ORTHO.tif").rio.reproject(32631) ]
         da1Refs = [img2da4residu(rr,da1R,da1R,flag_ref=True) for da1R in da1Rs ]
         
-        da10s =  [xr.open_dataset(f"{indir}/full_ortho_f1/f1-{idimg_:09d}_expcorr_ORTHO.tif").rio.reproject(32631) ]
+        da10s =  [xr.open_dataset(f"{indir}/full_ortho_f{filtre}_mID{minimizeID}/f1-{idimg_:09d}_expcorr_ORTHO.tif").rio.reproject(32631) ]
         da10ris = [img2da4residu(rr,da10,da10,flag_ref=True) for da10 in da10s ]
 
         shift, cc = get_shift(da1Refs, da10ris)
@@ -655,24 +661,44 @@ if __name__ == "__main__":
             "pixel_shift"
         ]
     )
-    df = df[df[pixel_shift].notnull()]
+    df = df[df['pixel_shift'].notnull()]
 
     df[["diff_x", "diff_y", "diff_z","diff_o","diff_p","diff_k", ]] = pd.DataFrame(
         df["diff_6d"].tolist(),
         index=df.index
     )
     df = df.drop(columns=["diff_6d"])
-    
-    df.to_csv(f"error_imu_sequence_piper01_{transectname}_{imufile_name}_deltaImg{delta_img}_mID{minimizeID}.csv", index=False)
 
-    fig = plt.figure()
-    ax = plt.subplot(121)
+    df[["pixel_shift_x", "pixel_shift_y", ]] = pd.DataFrame(
+        df["pixel_shift"].tolist(),
+        index=df.index
+    )
+    df["pixel_shift_norm"] =  np.sqrt(df["pixel_shift_x"]**2 + df["pixel_shift_y"]**2)
+
+    
+    df.to_csv(f"{indir}/error_imu_sequence_piper01_{transectname}_{imufile_name}_deltaImg{delta_img}_mID{minimizeID}.csv", index=False)
+
+    fig = plt.figure(figsize=(10,10))
+    
+    ax = plt.subplot(311)
     df.diff_x.plot(ax=ax, label='diff_x')
     df.diff_y.plot(ax=ax, label='diff_y')
     df.diff_z.plot(ax=ax, label='diff_z')
-    ax = plt.subplot(122)
+    ax.set_xlabel('delta meter')
+    ax.legend()
+    ax = plt.subplot(312)
     df.diff_o.plot(ax=ax, label='diff_o')
     df.diff_p.plot(ax=ax, label='diff_p')
     df.diff_k.plot(ax=ax, label='diff_k')
-    fig.savefig(f"error_imu_sequence_piper01_{transectname}_{imufile_name}_deltaImg{delta_img}_mID{minimizeID}.png")
+    ax.set_xlabel('delta degree')
+    ax.legend()
+    ax = plt.subplot(313)
+    df["pixel_shift_norm"].plot( label='shift img')
+    ax.legend()
+    ax.set_xlabel('shift image pixel length')
+    ax.set_ylabel('frame ID')
+
+    fig.suptitle(f"correction between image seperated by {delta_img} frames", fontsize=16)
+    fig.savefig(f"{indir}/error_imu_sequence_piper01_{transectname}_{imufile_name}_deltaImg{delta_img}_mID{minimizeID}.png")
     plt.close(fig)
+

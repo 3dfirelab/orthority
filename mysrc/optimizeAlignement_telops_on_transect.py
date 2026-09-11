@@ -18,7 +18,9 @@ import sys
 import gc
 import functools
 from scipy.optimize import minimize
-
+import socket
+import argparse
+from orthority.errors import OrthorityWarning
 
 #homebrewed
 import imuNcOoGeojson  
@@ -390,7 +392,14 @@ def residual(args, *params):
         
         # create Ortho object and orthorectify
         ortho = oty.Ortho(src_file, demFile, camera=camera, crs=cameras.crs)
-        ortho.process( f"{wkdir}/{flightname}_{flightdate}-{idimg}_ORTHO{str_tag}.tif", overwrite=True)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=".*not fully covered by the DEM.*",
+            )
+
+            ortho.process( f"{wkdir}/{flightname}_{flightdate}-{idimg}_ORTHO{str_tag}.tif", overwrite=True)
+        
         del ortho, camera
     del cameras
    
@@ -509,10 +518,14 @@ if __name__ == "__main__":
     
     flightname = 'piper01'
     flightdate = '20260520'
-    indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
+    hostname = socket.gethostname()
+    if hostname == 'andall':
+        indir = f'/data/shared/PIPER/piper01/Transects/{transectname}_{imufile_name}'
+    if hostname == 'pc70852':
+        indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
     
     outdir = indir + 'io/'
-    wkdir = '/tmp/orthority3_on_transect/'
+    wkdir = f'/tmp/orthority_on_transect_{transectname}_{imufile_name}/'
     os.makedirs(wkdir, exist_ok=True)
 
     #imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
@@ -536,8 +549,8 @@ if __name__ == "__main__":
 
     intparamFile = f"{indir}/io/{flightname}_int_param.yaml"
 
-    offset = [ np.array([.5,.5,.5]),    np.array([2,2,2]) ]
-    scale = [ np.array([1,1,1]), np.array([4,4,4]) ]
+    offset = [ np.array([5,5,5]),    np.array([3,3,3]) ]
+    scale = [ np.array([10,10,10]), np.array([6,6,6]) ]
 
     #imu = xr.open_dataset(indir+imufile)
     imu = gpd.read_file(indir+imufile)
@@ -572,7 +585,7 @@ if __name__ == "__main__":
 
     # Construct an initial simplex: one vertex is x0, others are small perturbations
     x0 = np.array([*popt])   # assuming resbrutef is a list or array of length 6
-    step_size = 0.05  # Increase this if your function is too flat at the start
+    step_size = 0.1  # Increase this if your function is too flat at the start
     n = len(x0)
     initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
 

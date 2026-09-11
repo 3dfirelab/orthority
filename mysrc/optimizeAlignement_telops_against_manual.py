@@ -18,6 +18,10 @@ import sys
 import gc
 import functools
 import argparse
+import socket
+from scipy.optimize import minimize
+from pathlib import Path
+import yaml
 
 #homebrewed
 import imuNcOoGeojson  
@@ -490,41 +494,51 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--transectName",
+        "--configName",
         type=str,
-        default='001_320256',
+        default='',
         help="transect name"
     )
 
     args = parser.parse_args()
     
+    configFile =  f'./config/config-{args.configName}.yaml'
+    print("config file:", configFile)
+    Path.cwd()
+    config_path = Path(configFile) #"./config/config-sijean-01.yaml")
+
+    with config_path.open("r") as f:
+        cfg = yaml.safe_load(f)
+
     imufile_name = args.imufile_name
-    transectname = args.transectName
+    transectname = cfg['extractionName']
     
-    flightname = 'piper01'
-    flightdate = '20260520'
-    indir = f'/home/paugam/Data/ATR_test/flight01/Transects/{transectname}_{imufile_name}'
+    hostname = socket.gethostname()
+    
+    flightname = cfg['flightname']
+    flightdate = cfg['flightdate']
+    dirTelops  = cfg['dirTelops']
+    #indir = f'{dirTelops}/../Transects/{transectname}_{imufile_name}'
+    indir = f'{dirTelops}/../Transects/{transectname}'
     
     outdir = indir + 'io/'
-    wkdir = '/tmp/orthority3/'
+    wkdir = f'/tmp/orthority_opti_manual_{transectname}_{imufile_name}/'
     os.makedirs(wkdir, exist_ok=True)
 
     #imufile = '/../../safire/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1_smooth.nc'
     
-    if imufile_name == 'loa':
-        imufile = '/../../safire/piper01_psbga_gpgga_sync.gpkg'
-    if imufile_name == 'safire':
-        imufile = '/../../safire/piper01_safire.gpkg'
+    imufile = f'/../../safire/{flightname}_{imufile_name}_clipped.gpkg'
     
     #imufile = '/../../safire/piper01_safire.gpkg'
     #imufile_name = 'safire'
 
     imgdirname = 'tif_f1/'
     #idimgs = [62,1009]   
-    idimgs = [62]   
+    #idimgs = [62]   
+    idimgs = cfg['idimgs']   
     demFile =  '{:s}/../../dem/{:s}_dem_1m.tif'.format(indir,flightname)
 
-    indirimg = indir + '{:s}/'.format(imgdirname)
+    indirimg = indir + '/{:s}/'.format(imgdirname)
     
     
     warnings.filterwarnings("ignore", category=UserWarning, module="pyproj")         
@@ -538,8 +552,9 @@ if __name__ == "__main__":
     #offset = [ np.array([.5,.5,.5]),    np.array([5,5,5]) ]
     #scale = [ np.array([1,1,1]), np.array([10,10,10,]) ]
     
-    offset = [ np.array([3,3,3]),    np.array([2,2,2]) ]
-    scale = [ np.array([6,6,6]), np.array([4,4,4]) ]
+    #PIPER
+    offset = [ np.array([5,5,5]),    np.array([3,3,3]) ]
+    scale = [ np.array([10,10,10]), np.array([6,6,6]) ]
 
     #imu = xr.open_dataset(indir+imufile)
     imu = gpd.read_file(indir+imufile)
@@ -567,73 +582,16 @@ if __name__ == "__main__":
         residual( popt , params )
         #residual( popt.item().x , params)
         sys.exit()
+    
+    #First
+    ###########
     xc,yc,zc,oc,pc,kc = 0.5,0.5,0.5,  0.5,0.5,0.5
+    resbrutef =  [xc,yc,zc,oc,pc,kc]
     
-    resbrutef =  [oc,pc,kc]
-    
-    from scipy.optimize import minimize
-    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi1' ]
+    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu, [0.5,0.5,0.5], 'resi2' ]
 
     # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
     x0 = np.array(resbrutef)  # assuming resbrutef is a list or array of length 6
-
-    # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.9  # Increase this if your function is too flat at the start
-    n = len(x0)
-    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
-
-    # Perform optimization using Nelder-Mead with the custom simplex
-    result = minimize(
-        fun=residual,
-        x0=x0,
-        args=tuple(params),  # your additional parameters to residual()
-        method='Nelder-Mead',
-        options={
-            'initial_simplex': initial_simplex,
-            'xatol': 0.01,
-            'fatol': 0.1,
-            'disp': True,
-            'maxiter': 1000  # optional: increase if needed
-        }
-    )
-    np.save(f'resbrute1_xycopk_minimize1_{transectname}_{imufile_name}.npy',result)
-
-
-    popt = result.x
-    params = [ {'offset':offset,'scale':scale}, False,'opk', imu, [0.5,0.5,0.5], 'resi2' ]
-
-    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
-    x0 = np.array(popt)  # assuming resbrutef is a list or array of length 6
-
-    # Construct an initial simplex: one vertex is x0, others are small perturbations
-    step_size = 0.3  # Increase this if your function is too flat at the start
-    n = len(x0)
-    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
-
-    # Perform optimization using Nelder-Mead with the custom simplex
-    result = minimize(
-        fun=residual,
-        x0=x0,
-        args=tuple(params),  # your additional parameters to residual()
-        method='Nelder-Mead',
-        options={
-            'initial_simplex': initial_simplex,
-            'xatol': 0.01,
-            'fatol': 0.1,
-            'disp': True,
-            'maxiter': 1000  # optional: increase if needed
-        }
-    )
-
-    np.save(f'resbrute1_xycopk_minimize2_{transectname}_{imufile_name}.npy',result)
-
-
-
-    popt = result.x
-    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu, [], 'resi2' ]
-
-    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
-    x0 = np.array([0.5, 0.5, 0.5, *popt])   # assuming resbrutef is a list or array of length 6
 
     # Construct an initial simplex: one vertex is x0, others are small perturbations
     step_size = 0.05  # Increase this if your function is too flat at the start
@@ -641,7 +599,112 @@ if __name__ == "__main__":
     initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
 
     # Perform optimization using Nelder-Mead with the custom simplex
-    result = minimize(
+    result1 = minimize(
+        fun=residual,
+        x0=x0,
+        args=tuple(params),  # your additional parameters to residual()
+        method='Nelder-Mead',
+        options={
+            'initial_simplex': initial_simplex,
+            'xatol': 0.01,
+            'fatol': 0.1,
+            'disp': True,
+            'maxiter': 1000  # optional: increase if needed
+        }
+    )
+    np.save(f'resbrute1_xycopk_minimize1a_{transectname}_{imufile_name}.npy',result1)
+    
+    params = [ {'offset':offset,'scale':scale}, True,'xyzopk', imu, [0.5,0.5,0.5] , 'resi2']
+    popt = result1.x    
+    #residual( np.array([0.5, 0.5, 0.5, *popt]) , params )
+    residual( np.array([*popt]) , params )
+
+    pdb.set_trace()
+    
+
+    #Second
+    ###########
+    if False:
+        popt = result1.x    
+        params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu, None, 'resi2' ]
+
+        # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
+        x0 = np.array([0.5, 0.5, 0.5, *popt])   # assuming resbrutef is a list or array of length 6
+
+        # Construct an initial simplex: one vertex is x0, others are small perturbations
+        step_size = 0.9  # Increase this if your function is too flat at the start
+        n = len(x0)
+        initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
+
+        # Perform optimization using Nelder-Mead with the custom simplex
+        result2 = minimize(
+            fun=residual,
+            x0=x0,
+            args=tuple(params),  # your additional parameters to residual()
+            method='Nelder-Mead',
+            options={
+                'initial_simplex': initial_simplex,
+                'xatol': 0.01,
+                'fatol': 0.1,
+                'disp': True,
+                'maxiter': 1000  # optional: increase if needed
+            }
+        )
+        np.save(f'resbrute1_xycopk_minimize1_{transectname}_{imufile_name}.npy',result2)
+   
+        popt_second = result2.x
+
+        #Third
+        ###########
+        popt = popt_second
+        params = [ {'offset':offset,'scale':scale}, False,'opk', imu, popt[:3], 'resi2' ]
+
+        # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
+        x0 = np.array(popt[3:])  # assuming resbrutef is a list or array of length 6
+
+        # Construct an initial simplex: one vertex is x0, others are small perturbations
+        step_size = 0.3  # Increase this if your function is too flat at the start
+        n = len(x0)
+        initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
+
+        # Perform optimization using Nelder-Mead with the custom simplex
+        print('Third:', n, x0, 'xyz', popt[:3])
+        result3 = minimize(
+            fun=residual,
+            x0=x0,
+            args=tuple(params),  # your additional parameters to residual()
+            method='Nelder-Mead',
+            options={
+                'initial_simplex': initial_simplex,
+                'xatol': 0.01,
+                'fatol': 0.1,
+                'disp': True,
+                'maxiter': 1000  # optional: increase if needed
+            }
+        )
+
+        np.save(f'resbrute1_xycopk_minimize2_{transectname}_{imufile_name}.npy',result3)
+    
+        popt = result3.x
+
+    else: 
+        popt_second = [0.5, 0.5, 0.5]
+        popt = result1.x
+
+    #Fourth
+    ###########
+    params = [ {'offset':offset,'scale':scale}, False,'xyzopk', imu, [], 'resi2' ]
+
+    # Your initial parameter guess (6 elements for x, y, z, omega, phi, kappa)
+    x0 = np.array([*popt_second[:3], *popt])   # assuming resbrutef is a list or array of length 6
+
+    # Construct an initial simplex: one vertex is x0, others are small perturbations
+    step_size = 0.05  # Increase this if your function is too flat at the start
+    n = len(x0)
+    initial_simplex = np.vstack([x0] + [x0 + step_size * np.eye(n)[i] for i in range(n)])
+
+    # Perform optimization using Nelder-Mead with the custom simplex
+    result4 = minimize(
         fun=residual,
         x0=x0,
         args=tuple(params),  # your additional parameters to residual()
@@ -655,8 +718,11 @@ if __name__ == "__main__":
         }
     )
 
-    np.save(f'resbrute1_xycopk_minimize3_{transectname}_{imufile_name}.npy',result)
+    np.save(f'resbrute1_xycopk_minimize3_{transectname}_{imufile_name}.npy',result4)
 
 
-
+    popt = np.load(f'resbrute1_xycopk_minimize3_{transectname}_{imufile_name}.npy',allow_pickle=True).item().x
+    print( popt )
+    params = [ {'offset':offset,'scale':scale}, True,'xyzopk', imu, [0.5,0.5,0.5] , 'resi2']
+    residual( popt , params )
 

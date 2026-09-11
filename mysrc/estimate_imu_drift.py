@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Estimate time-varying IMU XYZ/OPK drift from pairs of Orthority images.
+"""Estimate time-varying IMU OPK drift from pairs of Orthority images.
 
 For each window, a later raw image is orthorectified repeatedly and compared
 with an earlier fixed image from ``reference_dir``. Their frame IDs differ by
 ``pair_separation``.
 
-The optimizer starts from the global correction produced by
-``calibrate_orthority_imu.py``. Reported drift values are:
+The optimizer keeps calibrated XYZ fixed and starts OPK from the global
+correction produced by ``calibrate_orthority_imu.py``. The reported additional
+correction is the delta to add to that calibration:
 
-    local correction - global correction
+    delta correction = optimized correction - calibration correction
+    optimized correction = calibration correction + delta correction
 
 By default, windows advance by the same number of IDs as the pair separation:
 reference 1 -> raw 11, reference 11 -> raw 21, ...
@@ -49,6 +51,15 @@ REFERENCE_PATTERN = re.compile(
     r"^f(?P<filter>\d+)-(?P<id>\d+)(?:_expcorr)?_ORTHO\.tif$"
 )
 PARAMETER_NAMES = ("x", "y", "z", "omega", "phi", "kappa")
+OPK_INDICES = np.asarray([3, 4, 5], dtype=int)
+PIXEL_SHIFT_COLUMNS = (
+    "runortho_shift_apply_dx_px",
+    "runortho_shift_apply_dy_px",
+    "runortho_shift_apply_norm_px",
+    "runortho_flow_shift_apply_dx_px",
+    "runortho_flow_shift_apply_dy_px",
+    "runortho_flow_shift_apply_norm_px",
+)
 
 
 def _config_path(config_file: Path, config: dict, key: str) -> Path:
@@ -202,8 +213,18 @@ def _local_bounds(
 def _write_checkpoint(rows: list[dict], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "imu_drift_timeseries.csv"
-    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    _add_running_pixel_shift(pd.DataFrame(rows)).to_csv(csv_path, index=False)
     return csv_path
+
+
+def _add_running_pixel_shift(table: pd.DataFrame) -> pd.DataFrame:
+    table = table.copy()
+    for column in PIXEL_SHIFT_COLUMNS:
+        if column in table:
+            table[f"{column}_mean5"] = table[column].rolling(
+                window=5, min_periods=1
+            ).mean()
+    return table
 
 
 def _ecc_translation(
@@ -213,7 +234,7 @@ def _ecc_translation(
     epsilon: float,
 ) -> dict:
     """Return ECC translation for an existing RunOrtho image."""
-    _, candidate_gradient, candidate_valid = _candidate_on_reference(
+    _, candidate_gradient, candidate_valid, _ = _candidate_on_reference(
         candidate_path, reference
     )
     common = reference.valid & candidate_valid
@@ -283,7 +304,7 @@ def _optical_flow_translation(
     min_distance: float,
 ) -> dict:
     """Estimate translation from the nearest 90% of LK feature distances."""
-    candidate_image, _, candidate_valid = _candidate_on_reference(
+    candidate_image, _, candidate_valid, _ = _candidate_on_reference(
         candidate_path, reference
     )
     common = reference.valid & candidate_valid
@@ -358,9 +379,14 @@ def _optical_flow_translation(
     }
 
 
-def _plot_timeseries(table: pd.DataFrame, output_dir: Path) -> Path:
+def _plot_timeseries(
+    table: pd.DataFrame,
+    output_dir: Path,
+    active_indices: np.ndarray = OPK_INDICES,
+) -> Path:
     if table.empty:
         raise ValueError("No successful drift estimates are available to plot.")
+    table = _add_running_pixel_shift(table)
     if table["time"].notna().any():
         x_values = pd.to_datetime(table["time"])
         x_label = "Image time"
@@ -370,60 +396,108 @@ def _plot_timeseries(table: pd.DataFrame, output_dir: Path) -> Path:
 
     figure, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
     for name in ("x", "y", "z"):
-        axes[0].plot(x_values, table[f"extra_{name}"], marker="o", label=name)
+        line, = axes[0].plot(
+            x_values, table[f"extra_{name}"], marker="o", label=name
+        )
+        index = PARAMETER_NAMES.index(name)
+        if index in active_indices:
+            mean = table[f"extra_{name}"].mean()
+            axes[0].axhline(
+                mean,
+                color=line.get_color(),
+                linestyle=":",
+                linewidth=1.2,
+                label=f"mean {name}={mean:.4f} m",
+            )
     axes[0].axhline(0, color="black", linewidth=0.8)
     axes[0].set_ylabel("Additional XYZ correction (m)")
     axes[0].legend(ncol=3)
     axes[0].grid(alpha=0.3)
 
     for name in ("omega", "phi", "kappa"):
-        axes[1].plot(x_values, table[f"extra_{name}"], marker="o", label=name)
+        line, = axes[1].plot(
+            x_values, table[f"extra_{name}"], marker="o", label=name
+        )
+        index = PARAMETER_NAMES.index(name)
+        if index in active_indices:
+            mean = table[f"extra_{name}"].mean()
+            axes[1].axhline(
+                mean,
+                color=line.get_color(),
+                linestyle=":",
+                linewidth=1.2,
+                label=f"mean {name}={mean:.4f} deg",
+            )
     axes[1].axhline(0, color="black", linewidth=0.8)
     axes[1].set_ylabel("Additional OPK correction (degrees)")
     axes[1].legend(ncol=3)
     axes[1].grid(alpha=0.3)
 
-    axes[2].plot(
+    pixel_lines = {}
+    pixel_lines["runortho_shift_apply_dx_px"], = axes[2].plot(
         x_values,
         table["runortho_shift_apply_dx_px"],
         marker="o",
+        alpha=0.35,
         label="ECC dx",
     )
-    axes[2].plot(
+    pixel_lines["runortho_shift_apply_dy_px"], = axes[2].plot(
         x_values,
         table["runortho_shift_apply_dy_px"],
         marker="o",
+        alpha=0.35,
         label="ECC dy",
     )
-    axes[2].plot(
+    pixel_lines["runortho_shift_apply_norm_px"], = axes[2].plot(
         x_values,
         table["runortho_shift_apply_norm_px"],
         marker="o",
         linewidth=2,
+        alpha=0.35,
         label="ECC norm",
     )
-    axes[2].plot(
+    pixel_lines["runortho_flow_shift_apply_dx_px"], = axes[2].plot(
         x_values,
         table["runortho_flow_shift_apply_dx_px"],
         marker=".",
         linestyle="--",
+        alpha=0.35,
         label="flow dx",
     )
-    axes[2].plot(
+    pixel_lines["runortho_flow_shift_apply_dy_px"], = axes[2].plot(
         x_values,
         table["runortho_flow_shift_apply_dy_px"],
         marker=".",
         linestyle="--",
+        alpha=0.35,
         label="flow dy",
     )
-    axes[2].plot(
+    pixel_lines["runortho_flow_shift_apply_norm_px"], = axes[2].plot(
         x_values,
         table["runortho_flow_shift_apply_norm_px"],
         marker=".",
         linestyle="--",
         linewidth=2,
+        alpha=0.35,
         label="flow norm",
     )
+    rolling_styles = (
+        ("runortho_shift_apply_dx_px", "ECC dx mean5", "-"),
+        ("runortho_shift_apply_dy_px", "ECC dy mean5", "-"),
+        ("runortho_shift_apply_norm_px", "ECC norm mean5", "-"),
+        ("runortho_flow_shift_apply_dx_px", "flow dx mean5", "--"),
+        ("runortho_flow_shift_apply_dy_px", "flow dy mean5", "--"),
+        ("runortho_flow_shift_apply_norm_px", "flow norm mean5", "--"),
+    )
+    for column, label, linestyle in rolling_styles:
+        axes[2].plot(
+            x_values,
+            table[f"{column}_mean5"],
+            color=pixel_lines[column].get_color(),
+            linestyle=linestyle,
+            linewidth=2.2,
+            label=label,
+        )
     axes[2].axhline(0, color="black", linewidth=0.8)
     axes[2].set_ylabel("Current RunOrtho shift to apply (pixels)")
     axes[2].set_xlabel(x_label)
@@ -501,6 +575,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_iterations = args.maxiter or config["max_iterations"]
 
         print(f"Global correction: {baseline.tolist()}")
+        print("Optimizing drift parameters: omega, phi, kappa (XYZ fixed).")
         print(f"Processing {len(windows)} frame-pair windows.")
         for window_index, (first_id, second_id) in enumerate(windows, start=1):
             print(
@@ -582,17 +657,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "initial_step_opk": config["initial_step_opk"],
             }
             objective = CalibrationObjective(
-                objective_config, imu, references, lower, upper
+                objective_config,
+                imu,
+                references,
+                lower,
+                upper,
+                fixed_parameters=baseline,
+                active_indices=OPK_INDICES,
             )
-            initial_normalized = (baseline - lower) / (upper - lower)
+            initial_normalized = (
+                (baseline[OPK_INDICES] - lower[OPK_INDICES])
+                / (upper[OPK_INDICES] - lower[OPK_INDICES])
+            )
             result = minimize(
                 objective,
                 initial_normalized,
                 method="Nelder-Mead",
-                bounds=[(0.0, 1.0)] * 6,
+                bounds=[(0.0, 1.0)] * len(OPK_INDICES),
                 options={
                     "initial_simplex": _initial_simplex(
-                        initial_normalized, lower, upper, objective_config
+                        initial_normalized,
+                        lower,
+                        upper,
+                        objective_config,
+                        active_indices=OPK_INDICES,
                     ),
                     "maxiter": max_iterations,
                     "xatol": config["parameter_tolerance"],
@@ -602,6 +690,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 },
             )
             local = objective.physical_parameters(result.x)
+            # This is the delta to add to the global calibration correction.
             extra = local - baseline
             reference_time = _frame_time(raw_files[first_id])
             image_time = _frame_time(raw_files[second_id])
@@ -627,7 +716,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 row[f"extra_{name}"] = float(extra[index])
             rows.append(row)
             checkpoint = _write_checkpoint(rows, output_dir)
-            print(f"Additional correction: {extra.tolist()}")
+            print(
+                "Additional correction delta "
+                "(add to calibration): "
+                f"{extra.tolist()}"
+            )
+            print(f"Resulting total correction: {local.tolist()}")
             print(
                 "Current RunOrtho shift to apply: "
                 f"dx={row['runortho_shift_apply_dx_px']:.3f}px, "
@@ -644,11 +738,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(f"Checkpoint: {checkpoint}")
 
-        table = pd.DataFrame(rows)
-        plot_path = _plot_timeseries(table, output_dir)
+        table = _add_running_pixel_shift(pd.DataFrame(rows))
+        plot_path = _plot_timeseries(table, output_dir, OPK_INDICES)
         json_path = output_dir / "imu_drift_timeseries.json"
         json_path.write_text(
-            json.dumps(rows, indent=2, default=str) + "\n", encoding="utf-8"
+            json.dumps(table.to_dict(orient="records"), indent=2, default=str)
+            + "\n",
+            encoding="utf-8",
         )
         print(f"Time-series plot: {plot_path}")
         print(f"Time-series JSON: {json_path}")

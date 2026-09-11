@@ -25,10 +25,15 @@ Configuration:
     output: imu_camera_calibration.json
     work_dir: /tmp/orthority_imu_calibration
 
-    initial_xyz: [0.0, 0.0, 0.0]       # metres, aircraft frame
-    initial_opk: [0.0, 0.0, 0.0]       # degrees
-    xyz_bounds: [[-10, 10], [-10, 10], [-10, 10]]
-    opk_bounds: [[-20, 20], [-20, 20], [-30, 30]]
+    initial_xyz: [0.0, 0.0, 0.0]       # initial correction, metres
+    initial_opk: [0.0, 0.0, 0.0]       # initial correction, degrees
+    optimize_parameters: [omega, phi, kappa]  # Keep initial_xyz fixed.
+    xyz_bounds: [[-10, 10], [-10, 10], [-10, 10]]  # offsets from initial
+    opk_bounds: [[-20, 20], [-20, 20], [-30, 30]]  # offsets from initial
+
+    global_optimizer: differential_evolution
+    global_iterations: 20
+    global_population: 5
 
     pairs:
       - image: /path/to/f1-000000001.tif
@@ -44,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -59,7 +65,7 @@ import yaml
 from affine import Affine
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
-from scipy.optimize import minimize
+from scipy.optimize import differential_evolution, minimize
 from scipy.stats import qmc
 
 import imuNcOoGeojson
@@ -87,6 +93,15 @@ class PreparedReference:
     image: np.ndarray
     gradient: np.ndarray
     valid: np.ndarray
+
+
+def _image_id(path: Path) -> str:
+    """Return the source image ID after removing known processing suffixes."""
+    return re.sub(r"(?:_modified|_ortho)+$", "", path.stem, flags=re.IGNORECASE)
+
+
+def _same_image_id(pair: ImagePair) -> bool:
+    return _image_id(pair.image) == _image_id(pair.reference)
 
 
 def _read_config(path: Path) -> dict:
@@ -137,6 +152,31 @@ def _read_config(path: Path) -> dict:
             )
         )
     config["pairs"] = pairs
+
+    initial = np.concatenate(
+        (
+            _vector(config, "initial_xyz", [0, 0, 0]),
+            _vector(config, "initial_opk", [0, 0, 0]),
+        )
+    )
+    lower_offsets, upper_offsets = _bound_offsets(config)
+    config["xyz_bound_offsets"] = np.column_stack(
+        (lower_offsets[:3], upper_offsets[:3])
+    )
+    config["opk_bound_offsets"] = np.column_stack(
+        (lower_offsets[3:], upper_offsets[3:])
+    )
+    config["xyz_bounds"] = np.column_stack(
+        (initial[:3] + lower_offsets[:3], initial[:3] + upper_offsets[:3])
+    )
+    config["opk_bounds"] = np.column_stack(
+        (initial[3:] + lower_offsets[3:], initial[3:] + upper_offsets[3:])
+    )
+    raw_starts = config.get("starting_corrections")
+    if raw_starts is not None:
+        offsets, starts = _resolve_starting_corrections(raw_starts, initial)
+        config["starting_correction_offsets"] = offsets
+        config["starting_corrections"] = starts
     return config
 
 
@@ -147,7 +187,7 @@ def _vector(config: dict, key: str, default: Sequence[float]) -> np.ndarray:
     return value
 
 
-def _bounds(config: dict) -> tuple[np.ndarray, np.ndarray]:
+def _bound_offsets(config: dict) -> tuple[np.ndarray, np.ndarray]:
     try:
         xyz = np.asarray(
             config.get("xyz_bounds", [[-10, 10], [-10, 10], [-10, 10]]),
@@ -172,6 +212,19 @@ def _bounds(config: dict) -> tuple[np.ndarray, np.ndarray]:
     return bounds[:, 0], bounds[:, 1]
 
 
+def _bounds(config: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Return absolute bounds previously resolved by _read_config."""
+    try:
+        xyz = np.asarray(config["xyz_bounds"], dtype=float)
+        opk = np.asarray(config["opk_bounds"], dtype=float)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Configuration has no resolved XYZ/OPK bounds.") from error
+    bounds = np.vstack((xyz, opk))
+    if bounds.shape != (6, 2) or np.any(bounds[:, 0] >= bounds[:, 1]):
+        raise ValueError("Resolved XYZ and OPK bounds are invalid.")
+    return bounds[:, 0], bounds[:, 1]
+
+
 def _active_parameter_indices(config: dict) -> np.ndarray:
     names = config.get("optimize_parameters", list(PARAMETER_NAMES))
     if not isinstance(names, list) or not names:
@@ -184,6 +237,38 @@ def _active_parameter_indices(config: dict) -> np.ndarray:
     if len(set(names)) != len(names):
         raise ValueError("optimize_parameters contains duplicate names.")
     return np.asarray([PARAMETER_NAMES.index(name) for name in names], dtype=int)
+
+
+def _resolve_starting_corrections(
+    raw_starts: object, initial: np.ndarray
+) -> tuple[list[dict], list[dict]]:
+    if not isinstance(raw_starts, list) or not raw_starts:
+        raise ValueError("starting_corrections must be a non-empty list.")
+
+    offsets = []
+    starts = []
+    for index, raw_start in enumerate(raw_starts, start=1):
+        if not isinstance(raw_start, dict):
+            raise ValueError(
+                f"starting_corrections item {index} must be a mapping."
+            )
+        xyz_offset = np.asarray(raw_start.get("xyz", [0, 0, 0]), dtype=float)
+        opk_offset = np.asarray(raw_start.get("opk", [0, 0, 0]), dtype=float)
+        if xyz_offset.shape != (3,) or opk_offset.shape != (3,):
+            raise ValueError(
+                f"starting_corrections item {index} requires 3 XYZ and 3 OPK values."
+            )
+        offset = np.concatenate((xyz_offset, opk_offset))
+        if not np.all(np.isfinite(offset)):
+            raise ValueError(
+                f"starting_corrections item {index} contains non-finite values."
+            )
+        start = initial + offset
+        offsets.append(
+            {"xyz": xyz_offset.tolist(), "opk": opk_offset.tolist()}
+        )
+        starts.append({"xyz": start[:3].tolist(), "opk": start[3:].tolist()})
+    return offsets, starts
 
 
 def _starting_parameters(
@@ -276,7 +361,7 @@ def _load_imu(path: Path):
 def _gradient(image: np.ndarray, valid: np.ndarray) -> np.ndarray:
     values = image[valid]
     if values.size < 1000:
-        raise ValueError("Fewer than 1000 valid reference pixels are available.")
+        raise ValueError("Fewer than 1000 valid image pixels are available.")
     low, high = np.percentile(values, (2, 98))
     if not np.isfinite(low) or not np.isfinite(high) or high <= low:
         raise ValueError("Image has insufficient radiometric contrast.")
@@ -328,7 +413,7 @@ def _prepare_reference(pair: ImagePair, max_dimension: int) -> PreparedReference
 
 def _candidate_on_reference(
     ortho_path: Path, prepared: PreparedReference
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     pair = prepared.pair
     with rasterio.open(ortho_path) as dataset:
         if pair.image_band < 1 or pair.image_band > dataset.count:
@@ -347,6 +432,18 @@ def _candidate_on_reference(
             init_dest_nodata=True,
         )
         source_mask = dataset.read_masks(pair.image_band)
+        candidate_pixel_count = float(np.count_nonzero(source_mask))
+        same_crs = dataset.crs == prepared.crs
+        if same_crs:
+            source_pixel_area = abs(
+                dataset.transform.a * dataset.transform.e
+                - dataset.transform.b * dataset.transform.d
+            )
+            reference_pixel_area = abs(
+                prepared.transform.a * prepared.transform.e
+                - prepared.transform.b * prepared.transform.d
+            )
+            candidate_pixel_count *= source_pixel_area / reference_pixel_area
         valid = np.zeros((prepared.height, prepared.width), np.uint8)
         reproject(
             source=source_mask,
@@ -360,8 +457,18 @@ def _candidate_on_reference(
             resampling=Resampling.nearest,
             init_dest_nodata=True,
         )
+        if not same_crs:
+            # A cross-CRS source has no directly comparable pixel-area unit.
+            candidate_pixel_count = float(np.count_nonzero(valid))
     mask = (valid > 0) & np.isfinite(image)
-    return image, _gradient(image, mask), mask
+    # Global-search candidates can place most or all of the image outside the
+    # reference. Let the objective penalize those candidates instead of
+    # aborting the complete optimization.
+    try:
+        gradient = _gradient(image, mask)
+    except ValueError:
+        gradient = np.zeros(image.shape, dtype=np.float32)
+    return image, gradient, mask, candidate_pixel_count
 
 
 def plot_validation(
@@ -398,11 +505,11 @@ def plot_validation(
         axes[1].contour(
             candidate_gradient,
             levels=[np.percentile(candidate_levels, 80)],
-            colors="yellow",
+            colors="red",
             linewidths=0.7,
         )
     axes[1].set_title(
-        "Black=manual reference, yellow=corrected Orthority"
+        "Black=manual reference, red=corrected Orthority"
     )
     axes[1].set_facecolor("white")
     axes[1].set_xlim(0, prepared.width - 1)
@@ -419,6 +526,50 @@ def plot_validation(
     plt.close(figure)
 
 
+def _safe_filename_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
+
+
+def _persist_validation_plots(config: dict, validation_dir: Path) -> list[Path]:
+    import matplotlib.pyplot as plt
+
+    output_dir = Path(config["output"]).parent
+    imu_name = _safe_filename_part(Path(config["imu"]).stem)
+    transect_name = _safe_filename_part(output_dir.name)
+    sources = []
+    for index, pair in enumerate(config["pairs"], start=1):
+        source = validation_dir / f"diagnostic_pair_{index:03d}.png"
+        if source.is_file():
+            sources.append((pair, source))
+    if not sources:
+        return []
+
+    destination = output_dir / (
+        f"imu_camera_calibration_{imu_name}_{transect_name}.png"
+    )
+    if len(sources) == 1:
+        shutil.copy2(sources[0][1], destination)
+    else:
+        figure, axes = plt.subplots(
+            len(sources),
+            1,
+            figsize=(14, 6 * len(sources)),
+            constrained_layout=True,
+        )
+        axes = np.atleast_1d(axes)
+        for axis, (pair, source) in zip(axes, sources):
+            axis.imshow(plt.imread(source))
+            axis.set_title(_image_id(pair.image))
+            axis.set_axis_off()
+        figure.suptitle(
+            f"IMU-camera calibration: {imu_name} / {transect_name}"
+        )
+        figure.savefig(destination, dpi=180)
+        plt.close(figure)
+    print(f"Transect calibration plot: {destination}")
+    return [destination]
+
+
 def _normalized_correlation(
     reference: np.ndarray, candidate: np.ndarray, valid: np.ndarray
 ) -> float:
@@ -430,6 +581,44 @@ def _normalized_correlation(
     if denominator <= 0:
         return -1.0
     return float(np.dot(reference_values, candidate_values) / denominator)
+
+
+def _overlap_cost(overlap: float, minimum: float, penalty: float) -> float:
+    """Return zero above the minimum and a normalized penalty below it."""
+    shortfall = max(0.0, minimum - overlap)
+    return penalty * shortfall / minimum
+
+
+def _pair_overlap_cost(
+    overlap: float,
+    same_image_id: bool,
+    minimum: float,
+    penalty: float,
+) -> float:
+    if same_image_id:
+        return penalty * (1.0 - overlap)
+    return _overlap_cost(overlap, minimum, penalty)
+
+
+def _footprint_overlap(
+    reference_valid: np.ndarray,
+    candidate_valid: np.ndarray,
+    candidate_pixel_count: float,
+    symmetric: bool,
+) -> float:
+    """Measure reference coverage or symmetric footprint IoU."""
+    reference_count = float(np.count_nonzero(reference_valid))
+    intersection_count = float(
+        np.count_nonzero(reference_valid & candidate_valid)
+    )
+    if reference_count == 0:
+        return 0.0
+    if not symmetric:
+        return intersection_count / reference_count
+    union_count = reference_count + candidate_pixel_count - intersection_count
+    if union_count <= 0:
+        return 0.0
+    return min(1.0, intersection_count / union_count)
 
 
 class CalibrationObjective:
@@ -462,7 +651,18 @@ class CalibrationObjective:
         self.evaluation = 0
         self.best_cost = float("inf")
         self.best_parameters = None
+        self.initial_parameters = np.concatenate(
+            (
+                _vector(config, "initial_xyz", [0, 0, 0]),
+                _vector(config, "initial_opk", [0, 0, 0]),
+            )
+        )
         self.overlap_penalty = float(config.get("overlap_penalty", 0.5))
+        self.minimum_overlap = float(config.get("minimum_overlap", 0.5))
+        if self.overlap_penalty < 0:
+            raise ValueError("overlap_penalty must be non-negative.")
+        if not 0 < self.minimum_overlap <= 1:
+            raise ValueError("minimum_overlap must be greater than 0 and at most 1.")
         self.keep_outputs = False
         self.show_plots = False
         self.plot_outputs = True
@@ -521,20 +721,34 @@ class CalibrationObjective:
                     crs=cameras.crs,
                 )
                 ortho.process(str(ortho_path), overwrite=True)
-                candidate_image, candidate, candidate_valid = _candidate_on_reference(
-                    ortho_path, prepared
-                )
+                (
+                    candidate_image,
+                    candidate,
+                    candidate_valid,
+                    candidate_pixel_count,
+                ) = _candidate_on_reference(ortho_path, prepared)
                 common = prepared.valid & candidate_valid
-                overlap = np.count_nonzero(common) / np.count_nonzero(prepared.valid)
+                same_image_id = _same_image_id(prepared.pair)
+                overlap = _footprint_overlap(
+                    prepared.valid,
+                    candidate_valid,
+                    candidate_pixel_count,
+                    symmetric=same_image_id,
+                )
                 if np.count_nonzero(common) < 1000:
-                    pair_cost = 2.0
                     correlation = -1.0
+                    pair_cost = 2.0
                 else:
                     correlation = _normalized_correlation(
                         prepared.gradient, candidate, common
                     )
                     pair_cost = 1.0 - correlation
-                    pair_cost += self.overlap_penalty * (1.0 - overlap)
+                pair_cost += _pair_overlap_cost(
+                    overlap,
+                    same_image_id,
+                    self.minimum_overlap,
+                    self.overlap_penalty,
+                )
                 weighted_cost += prepared.pair.weight * pair_cost
                 total_weight += prepared.pair.weight
                 diagnostics.append((correlation, overlap))
@@ -557,12 +771,18 @@ class CalibrationObjective:
             f"{name}={value:.4f}"
             for name, value in zip(PARAMETER_NAMES, parameters)
         )
+        relative = parameters - self.initial_parameters
+        relative_values = " ".join(
+            f"d{name}={value:+.4f}"
+            for name, value in zip(PARAMETER_NAMES, relative)
+        )
         pair_values = " ".join(
             f"pair{index + 1}[r={correlation:.3f},o={overlap:.3f}]"
             for index, (correlation, overlap) in enumerate(diagnostics)
         )
         print(
-            f"evaluation {self.evaluation}: cost={cost:.6f} {values} {pair_values}",
+            f"evaluation {self.evaluation}: cost={cost:.6f} "
+            f"{values} relative[{relative_values}] {pair_values}",
             flush=True,
         )
         if cost < self.best_cost:
@@ -607,6 +827,7 @@ def _write_result(
     full_optimization_results: list[dict] | None = None,
 ) -> None:
     parameters = objective.physical_parameters(result.x)
+    relative = parameters - objective.initial_parameters
     payload = {
         "pose_model": config["pose_model"],
         "optimized_parameters": config.get(
@@ -614,12 +835,15 @@ def _write_result(
         ),
         "correction_xyz": parameters[:3].tolist(),
         "correction_opk": parameters[3:].tolist(),
+        "relative_correction_xyz": relative[:3].tolist(),
+        "relative_correction_opk": relative[3:].tolist(),
         "xyz_units": "metres in aircraft frame",
         "opk_units": "degrees",
         "cost": float(result.fun),
         "success": bool(result.success),
         "message": str(result.message),
         "evaluations": int(result.nfev),
+        "global_optimizer": config.get("global_optimizer", "multistart"),
         "selected_screening_start": selected_screening_start,
         "screening_results": screening_results or [],
         "full_optimization_results": full_optimization_results or [],
@@ -639,6 +863,8 @@ def _write_result(
     print(f"Calibration written to {output}")
     print(f"correction_xyz = {payload['correction_xyz']}")
     print(f"correction_opk = {payload['correction_opk']}")
+    print(f"relative_xyz = {payload['relative_correction_xyz']}")
+    print(f"relative_opk = {payload['relative_correction_opk']}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -726,16 +952,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             _prepare_reference(pair, max_dimension) for pair in config["pairs"]
         ]
         imu = _load_imu(Path(config["imu"]))
-        lower, upper = _bounds(config)
-        active_indices = _active_parameter_indices(config)
         initial = np.concatenate(
             (
                 _vector(config, "initial_xyz", [0, 0, 0]),
                 _vector(config, "initial_opk", [0, 0, 0]),
             )
         )
-        if np.any(initial < lower) or np.any(initial > upper):
-            raise ValueError("Initial parameters must lie inside their bounds.")
+        lower, upper = _bounds(config)
+        active_indices = _active_parameter_indices(config)
         starts = _starting_parameters(
             config,
             initial,
@@ -777,6 +1001,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if cost >= 1.0e6:
                 raise ValueError("Calibration evaluation failed.")
             print(f"Validation cost: {cost:.6f}")
+            _persist_validation_plots(config, work_dir / "validation")
             print(f"Validation rasters: {work_dir / 'validation'}")
             return 0
 
@@ -790,16 +1015,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("screening_iterations must be positive.")
         start_results = []
         screened_candidates = []
-        for start_index, start in enumerate(starts, start=1):
-            print(
-                f"\nScreening start {start_index}/{len(starts)}: "
-                + " ".join(
-                    f"{name}={value:.4f}"
-                    for name, value in zip(PARAMETER_NAMES, start)
-                )
+        global_optimizer = config.get("global_optimizer", "multistart")
+        if global_optimizer not in ("multistart", "differential_evolution"):
+            raise ValueError(
+                "global_optimizer must be 'multistart' or "
+                "'differential_evolution'."
             )
+
+        if global_optimizer == "differential_evolution":
+            global_iterations = int(config.get("global_iterations", 20))
+            global_population = int(config.get("global_population", 5))
+            global_tolerance = float(config.get("global_tolerance", 1.0e-2))
+            global_recombination = float(
+                config.get("global_recombination", 0.7)
+            )
+            global_mutation = np.asarray(
+                config.get("global_mutation", [0.5, 1.0]), dtype=float
+            )
+            if global_iterations <= 0:
+                raise ValueError("global_iterations must be positive.")
+            if global_population <= 0:
+                raise ValueError("global_population must be positive.")
+            if global_tolerance < 0:
+                raise ValueError("global_tolerance cannot be negative.")
+            if not 0 <= global_recombination <= 1:
+                raise ValueError("global_recombination must be between 0 and 1.")
+            if (
+                global_mutation.shape != (2,)
+                or not 0 <= global_mutation[0] < global_mutation[1] < 2
+            ):
+                raise ValueError(
+                    "global_mutation must be [min, max] with "
+                    "0 <= min < max < 2."
+                )
             normalized_start = (
-                (start[active_indices] - lower[active_indices])
+                (initial[active_indices] - lower[active_indices])
                 / (upper[active_indices] - lower[active_indices])
             )
             objective = CalibrationObjective(
@@ -808,35 +1058,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 references,
                 lower,
                 upper,
-                fixed_parameters=start,
+                fixed_parameters=initial,
                 active_indices=active_indices,
             )
-            result = minimize(
+            print(
+                "\nGlobal differential-evolution scan: "
+                f"{global_iterations} generations, population multiplier "
+                f"{global_population}."
+            )
+            result = differential_evolution(
                 objective,
-                normalized_start,
-                method="Nelder-Mead",
                 bounds=[(0.0, 1.0)] * len(active_indices),
-                options={
-                    "initial_simplex": _initial_simplex(
-                        normalized_start,
-                        lower,
-                        upper,
-                        config,
-                        active_indices=active_indices,
-                    ),
-                    "maxiter": screening_iterations,
-                    "xatol": float(config.get("parameter_tolerance", 1.0e-3)),
-                    "fatol": float(config.get("cost_tolerance", 1.0e-4)),
-                    "adaptive": True,
-                    "disp": True,
-                },
+                maxiter=global_iterations,
+                popsize=global_population,
+                tol=global_tolerance,
+                atol=float(config.get("cost_tolerance", 1.0e-4)),
+                mutation=tuple(global_mutation),
+                recombination=global_recombination,
+                seed=int(config.get("screening_seed", 0)),
+                init="sobol",
+                x0=normalized_start,
+                polish=False,
+                workers=1,
+                updating="immediate",
+                disp=True,
             )
             parameters = objective.physical_parameters(result.x)
             start_results.append(
                 {
-                    "start_index": start_index,
-                    "initial_xyz": start[:3].tolist(),
-                    "initial_opk": start[3:].tolist(),
+                    "start_index": 0,
+                    "method": "differential_evolution",
+                    "initial_xyz": initial[:3].tolist(),
+                    "initial_opk": initial[3:].tolist(),
                     "correction_xyz": parameters[:3].tolist(),
                     "correction_opk": parameters[3:].tolist(),
                     "cost": float(result.fun),
@@ -846,17 +1099,91 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
             print(
-                f"Screening start {start_index} result: cost={result.fun:.6f}, "
+                f"Global scan result: cost={result.fun:.6f}, "
                 f"success={result.success}"
             )
             if objective.best_parameters is not None and np.isfinite(result.fun):
                 screened_candidates.append(
                     {
-                        "start_index": start_index,
+                        "start_index": 0,
                         "cost": float(result.fun),
                         "parameters": parameters.copy(),
                     }
                 )
+        else:
+            for start_index, start in enumerate(starts, start=1):
+                print(
+                    f"\nScreening start {start_index}/{len(starts)}: "
+                    + " ".join(
+                        f"{name}={value:.4f}"
+                        for name, value in zip(PARAMETER_NAMES, start)
+                    )
+                )
+                normalized_start = (
+                    (start[active_indices] - lower[active_indices])
+                    / (upper[active_indices] - lower[active_indices])
+                )
+                objective = CalibrationObjective(
+                    config,
+                    imu,
+                    references,
+                    lower,
+                    upper,
+                    fixed_parameters=start,
+                    active_indices=active_indices,
+                )
+                result = minimize(
+                    objective,
+                    normalized_start,
+                    method="Nelder-Mead",
+                    bounds=[(0.0, 1.0)] * len(active_indices),
+                    options={
+                        "initial_simplex": _initial_simplex(
+                            normalized_start,
+                            lower,
+                            upper,
+                            config,
+                            active_indices=active_indices,
+                        ),
+                        "maxiter": screening_iterations,
+                        "xatol": float(
+                            config.get("parameter_tolerance", 1.0e-3)
+                        ),
+                        "fatol": float(config.get("cost_tolerance", 1.0e-4)),
+                        "adaptive": True,
+                        "disp": True,
+                    },
+                )
+                parameters = objective.physical_parameters(result.x)
+                start_results.append(
+                    {
+                        "start_index": start_index,
+                        "method": "nelder_mead_screening",
+                        "initial_xyz": start[:3].tolist(),
+                        "initial_opk": start[3:].tolist(),
+                        "correction_xyz": parameters[:3].tolist(),
+                        "correction_opk": parameters[3:].tolist(),
+                        "cost": float(result.fun),
+                        "success": bool(result.success),
+                        "message": str(result.message),
+                        "evaluations": int(result.nfev),
+                    }
+                )
+                print(
+                    f"Screening start {start_index} result: "
+                    f"cost={result.fun:.6f}, success={result.success}"
+                )
+                if (
+                    objective.best_parameters is not None
+                    and np.isfinite(result.fun)
+                ):
+                    screened_candidates.append(
+                        {
+                            "start_index": start_index,
+                            "cost": float(result.fun),
+                            "parameters": parameters.copy(),
+                        }
+                    )
 
         if not screened_candidates:
             raise ValueError("Every screening optimization failed.")
@@ -973,6 +1300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             selected_screening_start=best_start,
             full_optimization_results=full_results,
         )
+        _persist_validation_plots(config, work_dir / "validation")
         print(
             "Optimized parameters: "
             + ", ".join(PARAMETER_NAMES[index] for index in active_indices)

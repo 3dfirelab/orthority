@@ -1,30 +1,44 @@
 # One shared IMU/camera correction is optimized over every pair below.
 flight_name: as250018
-imu: /home/paugam/Data/ATR42/as250018/safire/as250018_safire_clipped.gpkg
+imu: /home/paugam/Data/ATR42/as250018/safire/as250018_safire.gpkg
 int_param: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/io/as250018_int_param.yaml
 dem: /home/paugam/Data/ATR42/as250018/dem/as250018_dem_1m.tif
 output: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/imu_camera_calibration.json
 work_dir: /tmp/orthority_imu_calibration_cimenterie01
+#separate_lever_arm_boresight or legacy_coupled
 pose_model: separate_lever_arm_boresight
 
 # Physical initial values and bounds.
-initial_xyz: [0.0, 0.0, 0.0]
+initial_xyz: [-4.79, 0.245, 0.20]
 initial_opk: [0.0, 0.0, 0.0]
-initial_step_xyz: [0.5, 0.5, 0.5]
+initial_step_xyz: [0.1, 0.1, 0.5]
 initial_step_opk: [0.5, 0.5, 0.5]
 # Optimize the lever-arm and boresight corrections jointly.
-optimize_parameters: [x, y, z, omega, phi, kappa]
+#optimize_parameters: [x, y, z, omega, phi, kappa]
+optimize_parameters: [x,y,z,omega, phi, kappa]
 xyz_bounds:
-  - [-50.0, 50.0]
-  - [-50.0, 50.0]
-  - [-50.0, 50.0]
+  - [-10., 10.]
+  - [-10., 10.]
+  - [-40., 40.]
 opk_bounds:
-  - [-5.0, 5.0]
-  - [-5.0, 5.0]
-  - [-5.0, 5.0]
+  - [-3., 3.]
+  - [-3., 3.]
+  - [-3., 3.]
 
 max_dimension: 2048
-max_iterations: 500
+global_optimizer: differential_evolution
+global_iterations: 20
+global_population: 5
+global_tolerance: 0.01
+global_mutation: [0.5, 1.0]
+global_recombination: 0.7
+# These settings are used only when global_optimizer is multistart.
+screening_iterations: 2
+screening_samples: 0
+screening_seed: 42
+# Refine the best global candidate with Nelder-Mead.
+full_optimization_starts: 1
+max_iterations: 300
 overlap_penalty: 0.5
 parameter_tolerance: 0.001
 cost_tolerance: 0.0001
@@ -36,3 +50,8 @@ pairs:
     image_band: 1
     reference_band: 1
     weight: 1.0
+    #  - image: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/tif_f1/f1-000000469.tif
+    #reference: /home/paugam/Data/ATR42/as250018/Transects/cimenterie01/tif_f1_ortho/f1-000000469_modified.tif
+    #image_band: 1
+    #reference_band: 1
+    #weight: 1.0
