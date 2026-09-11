@@ -386,6 +386,16 @@ if __name__ == "__main__":
             "correction_xyz and correction_opk override the YAML calibration."
         ),
     )
+    parser.add_argument(
+        "--imu-source",
+        type=str,
+        default=None,
+        help=(
+            "Select an entry when 'imu' in the dataset YAML is a mapping of "
+            "source name to path, e.g. 'safire' or 'loa'. Not needed when "
+            "'imu' is a single path."
+        ),
+    )
     args = parser.parse_args()
 
     with args.config.open("r", encoding="utf-8") as config_file:
@@ -408,13 +418,19 @@ if __name__ == "__main__":
 
     indirimg = config_path("input_dir")
     outdir = config_path("output_dir")
-    imufile_name = cfg.get("imufile_name", "safire")
-    imufile = data_root / "safire" / f"{flightname}_{imufile_name}.gpkg"
+    imufile, imu_source = imuNcOoGeojson.resolve_imu_path(
+        cfg, args.config.resolve().parent, args.imu_source
+    )
+    if imu_source is not None:
+        # Several imu sources share this YAML; keep their outputs apart.
+        outdir = outdir.with_name(f"{outdir.name}_{imu_source}")
     demFile = data_root / "dem" / f"{flightname}_dem_1m.tif"
     intparamFile = indir / "io" / f"{flightname}_int_param.yaml"
     calibration_path = args.calibration
     if calibration_path is None and cfg.get("calibration"):
-        calibration_path = config_path("calibration")
+        calibration_path, _ = imuNcOoGeojson.resolve_imu_path(
+            cfg, args.config.resolve().parent, imu_source, key="calibration"
+        )
 
     for label, path in (
         ("input directory", indirimg),
@@ -429,7 +445,7 @@ if __name__ == "__main__":
         shutil.rmtree(outdir)
     os.makedirs(outdir, exist_ok=True)
 
-    wkdir = Path(f"/tmp/orthority_wkdir_ortho_{transectname}_{imufile_name}")
+    wkdir = Path(f"/tmp/orthority_wkdir_ortho_{transectname}_{imu_source or 'default'}")
     if os.path.isdir(wkdir): shutil.rmtree(wkdir)
     os.makedirs(wkdir, exist_ok=True)
     
@@ -462,6 +478,7 @@ if __name__ == "__main__":
 
     print("input:", indirimg)
     print("output:", outdir)
+    print("imu:", imufile, f"(source={imu_source})" if imu_source else "")
     print("correction_xyz:", correction_xyz)
     print("correction_opk:", correction_opk)
     print("pose_model:", pose_model)

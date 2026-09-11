@@ -1,9 +1,12 @@
 # One shared IMU/camera correction is optimized over every pair below.
 flight_name: az260002
-imu: /home/paugam/Data/PIPER/az260002/safire/az260002_safire.gpkg
-int_param: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/io/az260002_int_param.yaml
-dem: /home/paugam/Data/PIPER/az260002/dem/az260002_dem_1m.tif
-output: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration.json
+imu:
+  safire: /data/shared/PIPER/az260002/safire/az260002_safire.gpkg
+  loa: /data/shared/PIPER/az260002/safire/piper01_psbga_gpgga_sync.gpkg
+  safire_post: /data/shared/PIPER/az260002/safire/az260002_safire_postprocessed.gpkg
+int_param: /data/shared/PIPER/az260002/Transects/001_320256_safire/io/az260002_int_param.yaml
+dem: /data/shared/PIPER/az260002/dem/az260002_dem_1m.tif
+output: /data/shared/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration.json
 work_dir: /tmp/orthority_imu_calibration_001
 pose_model: legacy_coupled  #separate_lever_arm_boresight or legacy_coupled
 
@@ -26,9 +29,9 @@ starting_corrections:
 #  - xyz: [0.0, 0.0, 0.0]
 #    opk: [0.0, 0.0, -0.08]
 xyz_bounds:
-  - [-9.0, 9.0]
-  - [-9.0, 9.0]
-  - [-9.0, 9.0]
+  - [-2.0, 2.0]
+  - [-2.0, 2.0]
+  - [-1.0, 1.0]
 opk_bounds:
   - [-3., 3.]
   - [-3., 3.]
@@ -42,8 +45,9 @@ global_tolerance: 0.01
 global_mutation: [0.5, 1.0]
 global_recombination: 0.7
 # These settings are used only when global_optimizer is multistart.
-screening_iterations: 2
-screening_samples: 0
+#screening_iterations: 2
+#screening_samples: 0
+
 screening_seed: 42
 # Refine the best global candidate with Nelder-Mead.
 full_optimization_starts: 1
@@ -54,13 +58,15 @@ cost_tolerance: 0.0001
 
 # Keep one item for single-image calibration; add items for multi-image calibration.
 pairs:
-  - image: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000062.tif
-    reference: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000062_modified.tif
+  - image: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000062.tif
+    reference: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000062_modified.tif
     image_band: 1
     reference_band: 1
     weight: 1.0
-  - image: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000950.tif
-    reference: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000950_modified.tif
+#- image: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000950.tif
+#reference: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000950_modified.tif
+  - image: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000001009.tif
+    reference: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000001009_modified.tif
     image_band: 1
     reference_band: 1
     weight: 1.0

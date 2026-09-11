@@ -9,7 +9,7 @@ end_dt: null
 dt_period: 0.1
 idimgs: [1]
 filter: 1
-imufile_name: 'safire'
+imu: '/home/paugam/Data/PIPER/az260002/safire/az260002_safire.gpkg'
 calibration: '/home/paugam/Data/PIPER/az260002/Transects/001/imu_camera_calibration.json'
 input_dir: '/home/paugam/Data/PIPER/az260002/Transects/002/tif_f1'
 output_dir: '/home/paugam/Data/PIPER/az260002/Transects/002/full_ortho_f1'
