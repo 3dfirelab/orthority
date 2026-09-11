@@ -15,11 +15,20 @@ constrains the six parameters better than a single image.
 Example:
 
     python3 calibrate_orthority_imu.py calibration.yaml
+    python3 calibrate_orthority_imu.py calibration.yaml --imu-source safire
+    python3 calibrate_orthority_imu.py calibration.yaml --imu-source loa
 
 Configuration:
 
     flight_name: piper01
-    imu: /path/to/piper01_safire.gpkg
+
+    # 'imu' can be a single path, or a mapping of source name to path.
+    # A mapping requires --imu-source on the command line; the selected
+    # source name is appended to 'output' and 'work_dir' automatically
+    # so different sources never overwrite each other's results.
+    imu:
+      safire: /path/to/piper01_safire.gpkg
+      loa: /path/to/piper01_loa.gpkg
     int_param: /path/to/piper01_int_param.yaml
     dem: /path/to/piper01_dem_1m.tif
     output: imu_camera_calibration.json
@@ -89,7 +98,7 @@ class PreparedReference:
     valid: np.ndarray
 
 
-def _read_config(path: Path) -> dict:
+def _read_config(path: Path, imu_source: str | None = None) -> dict:
     with path.open("r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     if not isinstance(config, dict):
@@ -108,11 +117,25 @@ def _read_config(path: Path) -> dict:
     if not config.get("flight_name"):
         raise ValueError("Missing required configuration key: flight_name")
 
-    for key in ("imu", "int_param", "dem", "output", "work_dir"):
+    for key in ("int_param", "dem", "output", "work_dir"):
         if key not in config:
             raise ValueError(f"Missing required configuration key: {key}")
         value = Path(config[key]).expanduser()
         config[key] = value if value.is_absolute() else base / value
+
+    config["imu"], config["imu_source"] = imuNcOoGeojson.resolve_imu_path(
+        config, base, imu_source
+    )
+    if config["imu_source"] is not None:
+        # Several imu sources share this YAML; keep their outputs apart.
+        output = config["output"]
+        config["output"] = output.with_name(
+            f"{output.stem}_{config['imu_source']}{output.suffix}"
+        )
+        work_dir = config["work_dir"]
+        config["work_dir"] = work_dir.with_name(
+            f"{work_dir.name}_{config['imu_source']}"
+        )
 
     raw_pairs = config.get("pairs")
     if not isinstance(raw_pairs, list) or not raw_pairs:
@@ -609,6 +632,7 @@ def _write_result(
     parameters = objective.physical_parameters(result.x)
     payload = {
         "pose_model": config["pose_model"],
+        "imu_source": config.get("imu_source"),
         "optimized_parameters": config.get(
             "optimize_parameters", list(PARAMETER_NAMES)
         ),
@@ -649,6 +673,16 @@ def _build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("config", type=Path, help="Calibration YAML file.")
+    parser.add_argument(
+        "--imu-source",
+        type=str,
+        default=None,
+        help=(
+            "Select an entry when 'imu' in the YAML is a mapping of source "
+            "name to path, e.g. 'safire' or 'loa'. Not needed when 'imu' is "
+            "a single path."
+        ),
+    )
     parser.add_argument(
         "--maxiter",
         type=int,
@@ -707,7 +741,7 @@ def _initial_simplex(
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        config = _read_config(args.config)
+        config = _read_config(args.config, imu_source=args.imu_source)
         for path_key in ("imu", "int_param", "dem"):
             if not Path(config[path_key]).is_file():
                 raise ValueError(f"{path_key} file not found: {config[path_key]}")

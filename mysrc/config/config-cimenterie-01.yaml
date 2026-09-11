@@ -9,7 +9,7 @@ end_dt: null
 dt_period: 0.1
 idimgs: [1]
 filter: 1
-imufile_name: 'safire'
+imu: '/home/paugam/Data/ATR42/as250018/safire/as250018_safire.gpkg'
 calibration: '/home/paugam/Data/ATR42/as250018/Transects/cimenterie01/imu_camera_calibration.json'
 input_dir: '/home/paugam/Data/ATR42/as250018/Transects/cimenterie01/tif_f1_subset'
 output_dir: '/home/paugam/Data/ATR42/as250018/Transects/cimenterie01/full_ortho_f1_subset'

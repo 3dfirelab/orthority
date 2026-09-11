@@ -1,6 +1,12 @@
 # One shared IMU/camera correction is optimized over every pair below.
 flight_name: piper01
-imu: /path/to/piper01_safire.gpkg
+
+# A single path also works (see calibration-cimenterie.yaml). With a
+# mapping like this one, pass --imu-source safire (or loa) on the command
+# line; the chosen source is appended to 'output' and 'work_dir' below.
+imu:
+  safire: /path/to/piper01_safire.gpkg
+  loa: /path/to/piper01_loa.gpkg
 int_param: /path/to/io/piper01_int_param.yaml
 dem: /path/to/dem/piper01_dem_1m.tif
 output: imu_camera_calibration.json

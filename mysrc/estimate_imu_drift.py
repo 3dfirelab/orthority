@@ -10,6 +10,9 @@ The optimizer starts from the global correction produced by
 
     local correction - global correction
 
+When the dataset YAML's ``imu``/``calibration`` keys are mappings of
+source name to path (e.g. safire/loa), pass --imu-source to select one.
+
 By default, windows advance by the same number of IDs as the pair separation:
 reference 1 -> raw 11, reference 11 -> raw 21, ...
 """
@@ -60,7 +63,7 @@ def _config_path(config_file: Path, config: dict, key: str) -> Path:
     return path.resolve()
 
 
-def _load_dataset_config(path: Path) -> dict:
+def _load_dataset_config(path: Path, imu_source: str | None = None) -> dict:
     with path.open("r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     if not isinstance(config, dict):
@@ -69,10 +72,11 @@ def _load_dataset_config(path: Path) -> dict:
     data_root = Path(config["dirTelops"]).expanduser().resolve().parent
     transect = config["extractionName"]
     flight = config["flightname"]
-    imu_name = config.get("imufile_name", "safire")
     filter_id = int(config.get("filter", 1))
 
-    calibration_path = _config_path(path, config, "calibration")
+    calibration_path, _ = imuNcOoGeojson.resolve_imu_path(
+        config, path.resolve().parent, imu_source, key="calibration"
+    )
     with calibration_path.open("r", encoding="utf-8") as calibration_file:
         calibration_metadata = json.load(calibration_file)
     pose_model = calibration_metadata.get("pose_model")
@@ -81,15 +85,29 @@ def _load_dataset_config(path: Path) -> dict:
             f"{calibration_path} has no supported pose_model."
         )
 
+    imu_path, resolved_imu_source = imuNcOoGeojson.resolve_imu_path(
+        config, path.resolve().parent, imu_source
+    )
+    reference_dir = _config_path(path, config, "drift_reference_dir")
+    output_dir = _config_path(path, config, "drift_output_dir")
+    if resolved_imu_source is not None:
+        # Several imu sources share this YAML. reference_dir must track
+        # runOrtho.py's per-source output_dir, and output_dir must keep
+        # each source's drift results apart.
+        reference_dir = reference_dir.with_name(
+            f"{reference_dir.name}_{resolved_imu_source}"
+        )
+        output_dir = output_dir.with_name(f"{output_dir.name}_{resolved_imu_source}")
     return {
         "flight_name": flight,
         "filter": filter_id,
         "input_dir": _config_path(path, config, "drift_input_dir"),
-        "reference_dir": _config_path(path, config, "drift_reference_dir"),
-        "output_dir": _config_path(path, config, "drift_output_dir"),
+        "reference_dir": reference_dir,
+        "output_dir": output_dir,
         "calibration": calibration_path,
         "pose_model": pose_model,
-        "imu": data_root / "safire" / f"{flight}_{imu_name}.gpkg",
+        "imu": imu_path,
+        "imu_source": resolved_imu_source,
         "int_param": (
             data_root / "Transects" / transect / "io" / f"{flight}_int_param.yaml"
         ),
@@ -448,6 +466,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument(
+        "--imu-source",
+        type=str,
+        default=None,
+        help=(
+            "Select an entry when 'imu' in the dataset YAML is a mapping of "
+            "source name to path, e.g. 'safire' or 'loa'. Not needed when "
+            "'imu' is a single path."
+        ),
+    )
+    parser.add_argument(
         "--max-windows",
         type=int,
         help="Process only the first N windows for testing.",
@@ -463,7 +491,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        config = _load_dataset_config(args.config)
+        config = _load_dataset_config(args.config, imu_source=args.imu_source)
         for key in (
             "input_dir",
             "reference_dir",
@@ -500,6 +528,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         rows = []
         max_iterations = args.maxiter or config["max_iterations"]
 
+        print(f"IMU: {config['imu']} (source={config['imu_source']})")
         print(f"Global correction: {baseline.tolist()}")
         print(f"Processing {len(windows)} frame-pair windows.")
         for window_index, (first_id, second_id) in enumerate(windows, start=1):

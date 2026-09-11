@@ -1,24 +1,66 @@
-import numpy as np 
-import xarray as xr 
+import numpy as np
+import xarray as xr
 import rasterio
 import sys
 import os
 import json
-import glob 
-import datetime 
+import glob
+import datetime
 import pyproj
 import warnings
+from pathlib import Path
 from rasterio.errors import NotGeoreferencedWarning
 warnings.simplefilter('ignore', NotGeoreferencedWarning)
-import pdb 
-import pandas as pd 
-import geopandas as gpd 
-import math 
+import pdb
+import pandas as pd
+import geopandas as gpd
+import math
 
 LEGACY_POSE_MODEL = "legacy_coupled"
 SEPARATE_POSE_MODEL = "separate_lever_arm_boresight"
 DEFAULT_POSE_MODEL = SEPARATE_POSE_MODEL
 SUPPORTED_POSE_MODELS = {LEGACY_POSE_MODEL, SEPARATE_POSE_MODEL}
+
+
+##################################
+def resolve_imu_path(config, base, imu_source, key="imu"):
+    """Resolve config[key] to an absolute IMU file path.
+
+    config[key] is either a single path, or a mapping of source name to
+    path (e.g. ``{"safire": "...", "loa": "..."}``). When it is a mapping,
+    imu_source selects which entry to use and is required.
+
+    Returns (path, resolved_source): resolved_source is the selected
+    source name, or None when config[key] was a single path.
+    """
+    if key not in config:
+        raise ValueError(f"Missing required configuration key: {key}")
+    raw = config[key]
+    if isinstance(raw, dict):
+        if not raw:
+            raise ValueError(f"'{key}' mapping must contain at least one source.")
+        if imu_source is None:
+            raise ValueError(
+                f"Configuration defines multiple {key} sources "
+                f"({', '.join(sorted(raw))}); pass --imu-source to select one."
+            )
+        if imu_source not in raw:
+            raise ValueError(
+                f"Unknown {key} source '{imu_source}'. Configured sources: "
+                f"{', '.join(sorted(raw))}."
+            )
+        value = Path(raw[imu_source]).expanduser()
+        resolved_source = imu_source
+    else:
+        if imu_source is not None:
+            raise ValueError(
+                f"--imu-source was given but '{key}' in the configuration is "
+                "a single path, not a mapping of sources."
+            )
+        value = Path(raw).expanduser()
+        resolved_source = None
+    path_value = value if value.is_absolute() else Path(base) / value
+    return path_value, resolved_source
 
 ##################################
 def append_to_dict(file_name, xyz, opk, latlonalt, data_dict):
