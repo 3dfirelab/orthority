@@ -1,0 +1,82 @@
+# Time-varying OPK drift optimisation for transect 003 with the Safire IMU.
+# This file is intentionally specific to this transect/IMU combination.
+
+flightname: az260002
+transect: "003_320256"
+imu_source: safire
+
+input_dir: /data/shared/PIPER/az260002/Transects/003_320256_safire/tif_f1
+reference_dir: /data/shared/PIPER/az260002/Transects/003_320256_safire/full_ortho_f1_safire
+imu: /data/shared/PIPER/az260002/safire/az260002_safire.gpkg
+calibration: /data/shared/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration_safire.json
+output_dir: /data/shared/PIPER/az260002/Transects/003_320256_safire/optical_flow_drift_safire
+
+# One roll/pitch/yaw correction triplet per spline knot.  Corrections for each
+# image are evaluated from this 2-second spline, rather than solved per frame.
+spline_knot_spacing_s: 2.0
+solve_parameters: [roll, pitch, yaw]
+spline_smoothness_weight: 10.0
+spline_curvature_weight: 50.0
+opk_prior_std_deg: [1.0, 1.0, 2.0]
+
+# Pair each image with neighbours every 0.2 s over a +/- 1.0 s window.
+# At the 0.1 s acquisition cadence these are frame offsets +/-2 through +/-10.
+link_offsets_s: [-1.0, -0.8, -0.6, -0.4, -0.2, 0.2, 0.4, 0.6, 0.8, 1.0]
+link_weights:
+  0.2: 1.0
+  0.4: 1.0
+  0.6: 0.8
+  0.8: 0.7
+  1.0: 0.6
+
+# Feature detection and pyramidal Lucas-Kanade tracking.
+feature_detector: good_features_to_track
+max_features_per_image: 2000
+feature_quality_level: 0.01
+feature_min_distance_px: 8
+feature_block_size_px: 7
+flow_window_px: 31
+flow_pyramid_levels: 4
+flow_max_iterations: 30
+flow_epsilon: 0.01
+
+# Reject weak, inconsistent, or physically implausible feature observations.
+border_margin_px: 20
+exclude_nodata: true
+exclude_low_texture: true
+texture_std_min: 3.0
+min_feature_eigenvalue: 0.001
+max_lk_error_px: 12.0
+max_forward_backward_error_px: 1.0
+min_normalized_correlation: 0.80
+max_displacement_px: 80.0
+min_track_observations: 3
+min_track_duration_s: 0.4
+max_track_position_std_px: 1.5
+
+# Ensure retained features constrain the entire image rather than one patch.
+grid_rows: 6
+grid_cols: 6
+min_features_per_occupied_cell: 4
+min_occupied_cells_per_link: 12
+max_features_per_cell: 80
+min_link_observations: 30
+
+# Robust residual fitting and post-fit feature rejection.
+ransac_reprojection_threshold_px: 2.5
+ransac_confidence: 0.99
+robust_loss: huber
+huber_delta_px: 1.5
+max_final_feature_residual_px: 2.0
+
+# Rebuild tracks after each incremental OPK update, and assess convergence with
+# independent ECC pairs.  The primary ECC diagnostic remains the 1-second pair.
+max_iterations: 8
+recompute_features_each_iteration: true
+ecc_validation_link_offset_s: 1.0
+target_ecc_median_norm_px: 2.0
+target_ecc_p90_norm_px: 3.0
+min_relative_ecc_improvement: 0.02
+stop_after_no_improvement_iterations: 2
+validation_link_offsets_s: [-0.9, -0.7, -0.3, 0.3, 0.7, 0.9]
+validation_fraction: 0.2
