@@ -1,0 +1,36 @@
+# Orthorectification configuration for <flightname> / <transectname>.
+# Calibration is intentionally skipped: all IMU-camera corrections are zero.
+time_shift_to_add_to_image: <timelagcamera>
+imu_source: '<imuname>'
+note: <note>
+
+dirTelops: '/data/shared/PIPER/<flightname>/telops'
+extractionName: '<transectname>'
+flightname: '<flightname>'
+flightdate: <flightdate>
+
+start_FrameID: null
+end_FrameID: null
+start_dt: null
+end_dt: null
+dt_period: 0.1
+idimgs: [1]
+filter: 1
+image_glob: '*.tif'
+
+# Existing raw SAFIRE navigation data; no calibration JSON is supplied.
+imu: '<imufilename>'
+calibration: '<calibration>'
+
+input_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/tif_f1_320'
+output_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/full_ortho_f1_<imuname>'
+drift_input_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/tif_f1_320'
+drift_reference_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/full_ortho_f1_<imuname>'
+drift_output_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/imu_drift_<imuname>'
+dem: '/data/shared/PIPER/<flightname>/Transects/<transectname>/dem/<demname>_rgealti.tif'
+int_param: '/data/shared/PIPER/<flightname>/camera-io/camera-<flightname>-320.yaml'
+
+# Explicit zero correction for reproducibility. The runner uses these values
+# when no calibration file is provided.
+correction_xyz: [0.0, 0.0, 0.0]
+correction_opk: [0.0, 0.0, 0.0]

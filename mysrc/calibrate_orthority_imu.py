@@ -15,17 +15,16 @@ constrains the six parameters better than a single image.
 Example:
 
     python3 calibrate_orthority_imu.py calibration.yaml
-    python3 calibrate_orthority_imu.py calibration.yaml --imu-source safire
-    python3 calibrate_orthority_imu.py calibration.yaml --imu-source loa
+    The IMU source is selected by ``imu_source`` in the YAML file.
 
 Configuration:
 
     flight_name: piper01
 
     # 'imu' can be a single path, or a mapping of source name to path.
-    # A mapping requires --imu-source on the command line; the selected
-    # source name is appended to 'output' and 'work_dir' automatically
-    # so different sources never overwrite each other's results.
+    # When it is a mapping, 'imu_source' selects the source. The source
+    # name is appended to 'output' and 'work_dir' automatically.
+    imu_source: atlans
     imu:
       safire: /path/to/piper01_safire.gpkg
       loa: /path/to/piper01_loa.gpkg
@@ -68,6 +67,7 @@ from typing import Sequence
 import cv2
 import geopandas as gpd
 import numpy as np
+import xarray as xr
 import orthority as oty
 import rasterio
 import yaml
@@ -104,7 +104,6 @@ class PreparedReference:
     valid: np.ndarray
 
 
-#<<<<<<< HEAD
 def _image_id(path: Path) -> str:
     """Return the source image ID after removing known processing suffixes."""
     return re.sub(r"(?:_modified|_ortho)+$", "", path.stem, flags=re.IGNORECASE)
@@ -115,9 +114,6 @@ def _same_image_id(pair: ImagePair) -> bool:
 
 
 def _read_config(path: Path) -> dict:
-#=======
-#def _read_config(path: Path, imu_source: str | None = None) -> dict:
-#>>>>>>> origin/merge-andall
     with path.open("r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     if not isinstance(config, dict):
@@ -142,15 +138,34 @@ def _read_config(path: Path) -> dict:
         value = Path(config[key]).expanduser()
         config[key] = value if value.is_absolute() else base / value
 
-    config["imu"], config["imu_source"] = imuNcOoGeojson.resolve_imu_path(
-        config, base, imu_source
-    )
-    if config["imu_source"] is not None:
-        # Several imu sources share this YAML; keep their outputs apart.
-        output = config["output"]
-        config["output"] = output.with_name(
-            f"{output.stem}_{config['imu_source']}{output.suffix}"
+    configured_imu_source = config.get("imu_source")
+    if configured_imu_source is not None:
+        configured_imu_source = str(configured_imu_source).strip()
+        if not configured_imu_source:
+            raise ValueError("imu_source must not be empty.")
+
+    # A source selector belongs in the YAML. For a scalar IMU path it is a
+    # label only; for a mapping it selects the corresponding path.
+    if isinstance(config.get("imu"), dict):
+        config["imu"], resolved_source = imuNcOoGeojson.resolve_imu_path(
+            config, base, configured_imu_source
         )
+        config["imu_source"] = resolved_source
+    else:
+        config["imu"], _ = imuNcOoGeojson.resolve_imu_path(config, base, None)
+        config["imu_source"] = configured_imu_source
+    if config["imu_source"] is not None:
+        # A configured <imu> is an explicit final output location. Retain
+        # the legacy filename suffix for existing non-templated configs.
+        output = config["output"]
+        if "<imu>" in str(output):
+            config["output"] = Path(
+                str(output).replace("<imu>", config["imu_source"])
+            )
+        else:
+            config["output"] = output.with_name(
+                f"{output.stem}_{config['imu_source']}{output.suffix}"
+            )
         work_dir = config["work_dir"]
         config["work_dir"] = work_dir.with_name(
             f"{work_dir.name}_{config['imu_source']}"
@@ -356,6 +371,30 @@ def _starting_parameters(
 
 
 def _load_imu(path: Path):
+    required = [
+        "time",
+        "LATITUDE",
+        "LONGITUDE",
+        "ALTITUDE",
+        "ROLL_smooth",
+        "PITCH_smooth",
+        "THEAD_smooth",
+    ]
+    if path.suffix.lower() == ".nc":
+        imu = xr.open_dataset(path).rename({
+            "HEIGHT_WGS84": "ALTITUDE",
+            "ROLL": "ROLL_smooth",
+            "PITCH": "PITCH_smooth",
+            "THEAD": "THEAD_smooth",
+        })
+        missing = [column for column in required if column not in imu]
+        if missing:
+            raise ValueError(f"IMU file is missing columns: {', '.join(missing)}")
+        imu = imu.dropna(dim="time", subset=required).sortby("time")
+        if imu.sizes.get("time", 0) < 2:
+            raise ValueError("The IMU file has fewer than two complete records.")
+        return imu
+
     imu = gpd.read_file(path)
     rename = {
         "datetime_utc": "time",
@@ -367,15 +406,6 @@ def _load_imu(path: Path):
         "heading_deg": "THEAD_smooth",
     }
     imu = imu.rename(columns={key: value for key, value in rename.items() if key in imu})
-    required = [
-        "time",
-        "LATITUDE",
-        "LONGITUDE",
-        "ALTITUDE",
-        "ROLL_smooth",
-        "PITCH_smooth",
-        "THEAD_smooth",
-    ]
     missing = [column for column in required if column not in imu]
     if missing:
         raise ValueError(f"IMU file is missing columns: {', '.join(missing)}")
@@ -729,6 +759,9 @@ class CalibrationObjective:
                 correction_opk,
                 images,
                 pose_model=self.config["pose_model"],
+                time_shift_to_add_to_image=self.config.get(
+                    "time_shift_to_add_to_image", 0.0
+                ),
             )
             ext_param = (
                 evaluation_dir / f"{self.config['flight_name']}_ext_param.geojson"
@@ -904,14 +937,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("config", type=Path, help="Calibration YAML file.")
     parser.add_argument(
-        "--imu-source",
-        type=str,
+        "--time-shift-to-add-to-image",
+        type=float,
         default=None,
-        help=(
-            "Select an entry when 'imu' in the YAML is a mapping of source "
-            "name to path, e.g. 'safire' or 'loa'. Not needed when 'imu' is "
-            "a single path."
-        ),
+        help="Seconds added to each image timestamp before IMU interpolation (e.g. 2).",
     )
     parser.add_argument(
         "--maxiter",
@@ -971,7 +1000,28 @@ def _initial_simplex(
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        config = _read_config(args.config, imu_source=args.imu_source)
+        config = _read_config(args.config)
+        if args.time_shift_to_add_to_image is not None:
+            config["time_shift_to_add_to_image"] = args.time_shift_to_add_to_image
+        else:
+            config["time_shift_to_add_to_image"] = float(
+                config.get("time_shift_to_add_to_image", 0.0)
+            )
+        if not np.isfinite(config["time_shift_to_add_to_image"]):
+            raise ValueError("time_shift_to_add_to_image must be finite")
+        print(
+            "time_shift_to_add_to_image:",
+            config["time_shift_to_add_to_image"],
+            "s",
+        )
+        if config["time_shift_to_add_to_image"] != 0.0:
+            print("###############")
+            print(
+                "WARNING: IMAGE TIME SHIFT APPLIED: "
+                f"image timestamps will be shifted by {config['time_shift_to_add_to_image']:+.6f} s "
+                "before IMU interpolation."
+            )
+            print("###############")
         for path_key in ("imu", "int_param", "dem"):
             if not Path(config[path_key]).is_file():
                 raise ValueError(f"{path_key} file not found: {config[path_key]}")
