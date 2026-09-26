@@ -13,7 +13,7 @@ correction is the delta to add to that calibration:
     optimized correction = calibration correction + delta correction
 
 When the dataset YAML's ``imu``/``calibration`` keys are mappings of
-source name to path (e.g. safire/loa), pass --imu-source to select one.
+source name to path (e.g. safire/loa), selected by imu_source in YAML.
 
 By default, windows advance by the same number of IDs as the pair separation:
 reference 1 -> raw 11, reference 11 -> raw 21, ...
@@ -49,9 +49,9 @@ from calibrate_orthority_imu import (
 )
 
 
-RAW_PATTERN = re.compile(r"^f(?P<filter>\d+)-(?P<id>\d+)\.tif$")
+RAW_PATTERN = re.compile(r"^.+-(?P<id>\d+)\.tif$")
 REFERENCE_PATTERN = re.compile(
-    r"^f(?P<filter>\d+)-(?P<id>\d+)(?:_expcorr)?_ORTHO\.tif$"
+    r"^.+-(?P<id>\d+)_expcorr_ORTHO\.tif$"
 )
 PARAMETER_NAMES = ("x", "y", "z", "omega", "phi", "kappa")
 OPK_INDICES = np.asarray([3, 4, 5], dtype=int)
@@ -65,10 +65,17 @@ PIXEL_SHIFT_COLUMNS = (
 )
 
 
-def _config_path(config_file: Path, config: dict, key: str) -> Path:
+def _config_path(
+    config_file: Path, config: dict, key: str, imu_source: str | None = None
+) -> Path:
     if key not in config:
         raise ValueError(f"Missing required configuration key: {key}")
-    path = Path(config[key]).expanduser()
+    raw_path = str(config[key])
+    if "<imu>" in raw_path:
+        if imu_source is None:
+            raise ValueError(f"{key} uses <imu>; define imu_source in YAML.")
+        raw_path = raw_path.replace("<imu>", imu_source)
+    path = Path(raw_path).expanduser()
     if not path.is_absolute():
         path = config_file.resolve().parent / path
     return path.resolve()
@@ -85,8 +92,12 @@ def _load_dataset_config(path: Path, imu_source: str | None = None) -> dict:
     flight = config["flightname"]
     filter_id = int(config.get("filter", 1))
 
+    selected_imu_source = imu_source if imu_source is not None else config.get("imu_source")
+    calibration_selector = (
+        selected_imu_source if isinstance(config.get("calibration"), dict) else None
+    )
     calibration_path, _ = imuNcOoGeojson.resolve_imu_path(
-        config, path.resolve().parent, imu_source, key="calibration"
+        config, path.resolve().parent, calibration_selector, key="calibration"
     )
     with calibration_path.open("r", encoding="utf-8") as calibration_file:
         calibration_metadata = json.load(calibration_file)
@@ -96,33 +107,55 @@ def _load_dataset_config(path: Path, imu_source: str | None = None) -> dict:
             f"{calibration_path} has no supported pose_model."
         )
 
-    imu_path, resolved_imu_source = imuNcOoGeojson.resolve_imu_path(
-        config, path.resolve().parent, imu_source
+    imu_selector = (
+        selected_imu_source if isinstance(config.get("imu"), dict) else None
     )
-    reference_dir = _config_path(path, config, "drift_reference_dir")
-    output_dir = _config_path(path, config, "drift_output_dir")
-    if resolved_imu_source is not None:
-        # Several imu sources share this YAML. reference_dir must track
-        # runOrtho.py's per-source output_dir, and output_dir must keep
-        # each source's drift results apart.
-        reference_dir = reference_dir.with_name(
-            f"{reference_dir.name}_{resolved_imu_source}"
-        )
-        output_dir = output_dir.with_name(f"{output_dir.name}_{resolved_imu_source}")
+    imu_path, resolved_imu_source = imuNcOoGeojson.resolve_imu_path(
+        config, path.resolve().parent, imu_selector
+    )
+    path_imu_source = resolved_imu_source
+    source_label = resolved_imu_source or config.get("imu_source")
+    if "<imu>" in transect:
+        if source_label is None:
+            raise ValueError("extractionName uses <imu>; define imu_source in YAML.")
+        transect = transect.replace("<imu>", source_label)
+    reference_dir = _config_path(
+        path, config, "drift_reference_dir", path_imu_source
+    )
+    output_dir = _config_path(
+        path, config, "drift_output_dir", path_imu_source
+    )
+    if path_imu_source is not None:
+        # Keep compatibility with existing configs that use a safire base
+        # path. Configs using <imu> already resolve to their final paths.
+        transect_prefix = transect.rsplit("_", 1)[0]
+        source_transect = f"{transect_prefix}_{path_imu_source}"
+        if "<imu>" not in str(config["drift_reference_dir"]):
+            reference_dir = reference_dir.parent.with_name(source_transect) / (
+                f"{reference_dir.name}_{path_imu_source}"
+            )
+        if "<imu>" not in str(config["drift_output_dir"]):
+            output_dir = output_dir.parent.with_name(source_transect) / (
+                f"{output_dir.name}_{path_imu_source}"
+            )
     return {
         "flight_name": flight,
         "filter": filter_id,
-        "input_dir": _config_path(path, config, "drift_input_dir"),
+        "input_dir": _config_path(
+            path, config, "drift_input_dir", path_imu_source
+        ),
         "reference_dir": reference_dir,
         "output_dir": output_dir,
         "calibration": calibration_path,
         "pose_model": pose_model,
         "imu": imu_path,
-        "imu_source": resolved_imu_source,
-        "int_param": (
-            data_root / "Transects" / transect / "io" / f"{flight}_int_param.yaml"
+        "imu_source": source_label,
+        "int_param": _config_path(
+            path, config, "int_param", path_imu_source
         ),
-        "dem": data_root / "dem" / f"{flight}_dem_1m.tif",
+        "dem": _config_path(
+            path, config, "dem", path_imu_source
+        ),
         "pair_separation": int(config.get("drift_pair_separation", 10)),
         "window_step": int(config.get("drift_window_step", 10)),
         "max_iterations": int(config.get("drift_max_iterations", 150)),
@@ -160,8 +193,12 @@ def _indexed_files(directory: Path, pattern: re.Pattern, filter_id: int) -> dict
     indexed = {}
     for path in directory.glob("*.tif"):
         match = pattern.match(path.name)
-        if match and int(match.group("filter")) == filter_id:
-            indexed[int(match.group("id"))] = path
+        if not match:
+            continue
+        filter_group = match.groupdict().get("filter")
+        if filter_group is not None and int(filter_group) != filter_id:
+            continue
+        indexed[int(match.group("id"))] = path
     return indexed
 
 
@@ -540,16 +577,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument(
-        "--imu-source",
-        type=str,
-        default=None,
-        help=(
-            "Select an entry when 'imu' in the dataset YAML is a mapping of "
-            "source name to path, e.g. 'safire' or 'loa'. Not needed when "
-            "'imu' is a single path."
-        ),
-    )
-    parser.add_argument(
         "--max-windows",
         type=int,
         help="Process only the first N windows for testing.",
@@ -565,7 +592,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        config = _load_dataset_config(args.config, imu_source=args.imu_source)
+        config = _load_dataset_config(args.config)
         for key in (
             "input_dir",
             "reference_dir",
@@ -587,12 +614,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         reference_files = _indexed_files(
             config["reference_dir"], REFERENCE_PATTERN, config["filter"]
         )
-        windows = _build_windows(
-            raw_files,
-            reference_files,
-            config["pair_separation"],
-            config["window_step"],
-        )
+        try:
+            windows = _build_windows(
+                raw_files,
+                reference_files,
+                config["pair_separation"],
+                config["window_step"],
+            )
+        except ValueError as exc:
+            raw_names = sorted(path.name for path in raw_files.values())
+            reference_names = sorted(path.name for path in reference_files.values())
+            raise ValueError(
+                f"{exc}\n"
+                f"Raw search directory: {config['input_dir']}\n"
+                f"Raw filename pattern: {RAW_PATTERN.pattern}\n"
+                f"Raw matching files: {len(raw_names)}; IDs: {sorted(raw_files)[:20]}\n"
+                f"Raw sample: {raw_names[:5]}\n"
+                f"Reference search directory: {config['reference_dir']}\n"
+                f"Reference filename pattern: {REFERENCE_PATTERN.pattern}\n"
+                f"Reference matching files: {len(reference_names)}; IDs: {sorted(reference_files)[:20]}\n"
+                f"Reference sample: {reference_names[:5]}"
+            ) from exc
         if args.max_windows is not None:
             windows = windows[: args.max_windows]
 

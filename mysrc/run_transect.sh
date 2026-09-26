@@ -13,6 +13,8 @@ flightnote=""
 calib_transect=""
 calib_file_input=""
 overwriteflag=""
+time_lag_override=""
+run_tag=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --flightname)
@@ -45,6 +47,12 @@ while [[ $# -gt 0 ]]; do
     --overwrite)
       [[ $# -ge 2 ]] || { echo "Error: --overwrite requires true or false." >&2; exit 2; }
       overwriteflag=$2; shift 2 ;;
+    --time-lag)
+      [[ $# -ge 2 ]] || { echo "Error: --time-lag requires seconds." >&2; exit 2; }
+      time_lag_override=$2; shift 2 ;;
+    --run-tag)
+      [[ $# -ge 2 ]] || { echo "Error: --run-tag requires a value." >&2; exit 2; }
+      run_tag=$2; shift 2 ;;
     *)
       echo "Error: unknown option: $1" >&2
       exit 2
@@ -111,7 +119,12 @@ case "${overwriteflag,,}" in
   true|1|yes) overwrite=true ;;
 esac
 
-bas_name="${base_name}-${name_imu}-${calib_name}"
+if [[ -n "$run_tag" ]]; then
+  run_tag_suffix="-${run_tag}"
+else
+  run_tag_suffix=""
+fi
+bas_name="${base_name}-${name_imu}${run_tag_suffix}-${calib_name}"
 name_capital=$(echo "$name_imu" | cut -d'_' -f1 | tr '[:lower:]' '[:upper:]')
 root=/data/shared/PIPER/$flightname/Transects/$bas_name
 config_file=config/config-$flightname-$bas_name.yaml
@@ -172,18 +185,23 @@ mkdir -p "$log_dir"
 # 0.1 Estimate image/IMU time lag from optical flow
 motion_dir="$root/image_sequence_motion_$name_imu"
 lag_file="$motion_dir/best_time_lag.txt"
-run_task 0.1 "image motion and time-lag estimation" "$lag_file" \
-      python image_sequence_motion.py \
-    --images-dir "$root/tif_f1" \
-    --imu "$file_imu" \
-    --output-dir "$motion_dir"
+if [[ -n "$time_lag_override" ]]; then
+  timelag=$time_lag_override
+  echo "[0.1] Using fixed time lag: ${timelag} s"
+else
+  run_task 0.1 "image motion and time-lag estimation" "$lag_file" \
+    python image_sequence_motion.py \
+      --images-dir "$root/tif_f1" \
+      --imu "$file_imu" \
+      --output-dir "$motion_dir"
 
-timelag=$(awk -F= '$1 == "time_lag_seconds" {print $2}' "$lag_file")
-if [[ -z "$timelag" ]]; then
-  echo "[0.1] FAILED: no time_lag_seconds found in $lag_file"
-  exit 1
+  timelag=$(awk -F= '$1 == "time_lag_seconds" {print $2}' "$lag_file")
+  if [[ -z "$timelag" ]]; then
+    echo "[0.1] FAILED: no time_lag_seconds found in $lag_file"
+    exit 1
+  fi
+  echo "[0.1] Using estimated time lag: ${timelag} s"
 fi
-echo "[0.1] Using estimated time lag: ${timelag} s"
 
 # 1. Crop input images to 320x241
 if [[ "$overwrite" == true ]]; then
@@ -204,7 +222,8 @@ run_task 2 "transect DEM" "$root/dem/${base_name}_rgealti.tif" \
 #     transect. Otherwise, retain the explicitly supplied calibration file.
 if [[ "$run_calibration" == true ]]; then
   run_task 3.0 "IMU-camera calibration" "$calib_file" \
-    python calibrate_orthority_imu.py "$calib_config_file"
+    python calibrate_orthority_imu.py "$calib_config_file" \
+      --time-shift-to-add-to-image "$timelag"
 else
   echo "[3.0] Skipping IMU-camera calibration; using supplied calibration: $calib_file"
 fi

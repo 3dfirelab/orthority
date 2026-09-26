@@ -1,0 +1,36 @@
+# Orthorectification configuration for az260007 / bas00002-atlans-calib00001.
+# Calibration is intentionally skipped: all IMU-camera corrections are zero.
+time_shift_to_add_to_image: 2.26
+imu_source: 'atlans'
+note: "smooth flight"
+
+dirTelops: '/data/shared/PIPER/az260007/telops'
+extractionName: 'bas00002-atlans-calib00001'
+flightname: 'az260007'
+flightdate: 20260910
+
+start_FrameID: null
+end_FrameID: null
+start_dt: null
+end_dt: null
+dt_period: 0.1
+idimgs: [1]
+filter: 1
+image_glob: '*.tif'
+
+# Existing raw SAFIRE navigation data; no calibration JSON is supplied.
+imu: '/data/shared/PIPER/az260007/imu/TEST-ATLANS-2026_SAFIRE-PA23_SAFIRE_CORE_ATLANS_200HZ_20260910_az260007_L1_V1.nc'
+calibration: '/data/shared/PIPER/az260007/Transects/bas00001-atlans-calib00001/calib/imu_camera_calibration_atlans.json'
+
+input_dir: '/data/shared/PIPER/az260007/Transects/bas00002-atlans-calib00001/tif_f1_320'
+output_dir: '/data/shared/PIPER/az260007/Transects/bas00002-atlans-calib00001/full_ortho_f1_atlans'
+drift_input_dir: '/data/shared/PIPER/az260007/Transects/bas00002-atlans-calib00001/tif_f1_320'
+drift_reference_dir: '/data/shared/PIPER/az260007/Transects/bas00002-atlans-calib00001/full_ortho_f1_atlans'
+drift_output_dir: '/data/shared/PIPER/az260007/Transects/bas00002-atlans-calib00001/imu_drift_atlans'
+dem: '/data/shared/PIPER/az260007/Transects/bas00002-atlans-calib00001/dem/bas00002_rgealti.tif'
+int_param: '/data/shared/PIPER/az260007/camera-io/camera-az260007-320.yaml'
+
+# Explicit zero correction for reproducibility. The runner uses these values
+# when no calibration file is provided.
+correction_xyz: [0.0, 0.0, 0.0]
+correction_opk: [0.0, 0.0, 0.0]

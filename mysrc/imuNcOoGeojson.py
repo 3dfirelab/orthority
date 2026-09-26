@@ -237,8 +237,20 @@ def imutogeojson(
     frames=None,
     str_tag='',
     pose_model=DEFAULT_POSE_MODEL,
+    drift_model=None,
+    time_shift_to_add_to_image=0.0,
 ):
  
+    if drift_model is not None:
+        drift_table = pd.read_csv(drift_model)
+        required = {'time', 'extra_omega', 'extra_phi', 'extra_kappa'}
+        if missing := required - set(drift_table.columns):
+            raise ValueError(f'Drift model is missing columns: {sorted(missing)}')
+        drift_times = pd.to_datetime(drift_table['time'], utc=True).astype('datetime64[ns, UTC]').astype('int64').to_numpy()
+        drift_values = drift_table[['extra_omega', 'extra_phi', 'extra_kappa']].to_numpy(float)
+    else:
+        drift_times = drift_values = None
+
     if frames is None:
         frames = sorted(glob.glob(indirimg+'*.tif'))
 
@@ -282,24 +294,27 @@ def imutogeojson(
 
             elif '.tif' in frame: 
                 desc = metadata.get("TIFFTAG_IMAGEDESCRIPTION")
+                time_str = None
                 if desc:
-                    meta = json.loads(desc)  # convert to dict
+                    meta = json.loads(desc)  # preserve the former Telops path
                     time_str = meta.get("Time")
-                    if time_str:
-                        try:
-                            time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S.%f")
-                        except:
-                            time = datetime.datetime.strptime(time_str,"%Y-%m-%d %H:%M:%S")
+                if time_str:
+                    try:
+                        time = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S.%f")
+                    except ValueError:
+                        time = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
                 elif 'Time' in metadata.keys():
-                    try: 
+                    try:
                         time = datetime.datetime.strptime(metadata['Time'], "%Y-%m-%d %H:%M:%S.%f")
-                    except: 
+                    except ValueError:
                         time = datetime.datetime.strptime(metadata['Time'], "%Y-%m-%d %H:%M:%S")
+                else:
+                    raise ValueError(
+                        f"No Telops Time metadata found in TIFF: {frame}. "
+                        "Add the Time field before calibration or orthorectification."
+                    )
 
-                else: 
-                    print('could not find time in tif')
-                    print('stop here')
-                    sys.exit()
+            time += datetime.timedelta(seconds=float(time_shift_to_add_to_image))
             '''
             idx = np.abs(imu.time.values-np.datetime64(time)).argmin()
             #latlonZ
@@ -369,12 +384,25 @@ def imutogeojson(
             lever_arm = nominal_lever_arm + np.asarray(
                 correction_xyz, dtype=float
             )
+            if drift_times is None:
+                frame_drift_opk = np.zeros(3)
+            else:
+                frame_time = pd.Timestamp(time, tz='UTC').value
+                frame_drift_opk = np.array([
+                    np.interp(frame_time, drift_times, drift_values[:, column], left=0.0, right=0.0)
+                    for column in range(3)
+                ])
             xyz, opk = camera_pose_from_imu(
                 [Ximu, Yimu, Zimu],
                 [roll, pitch, yaw],
                 lever_arm,
-                correction_opk,
+                np.asarray(correction_opk, dtype=float) + frame_drift_opk,
                 pose_model=pose_model,
+            )
+            print(
+                f"frame {os.path.basename(frame)} time={time.isoformat()} "
+                f"camera_xyz={xyz.tolist()} camera_opk={opk.tolist()}",
+                flush=True,
             )
  
             lon, alt = transformer_inv.transform(*xyz[:2])

@@ -1,0 +1,13 @@
+# Camera model for a 320x240 crop taken from the 1936x1456 source image.
+# Focal length is scaled by 1936 / 320 because this is a crop, not a resize.
+Proselica_4mm:
+    type: opencv
+    im_size: [320, 240]
+    focal_len: [4.165486, 4.173266]
+    cx: 0.0
+    cy: 0.0
+    k1: -0.1162685
+    k2: 0.0825623
+    p1: 0.0
+    p2: 0.0
+    k3: -0.02610017

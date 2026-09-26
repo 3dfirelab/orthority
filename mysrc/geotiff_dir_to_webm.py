@@ -10,6 +10,7 @@ environment, plus ffmpeg on PATH.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -22,10 +23,11 @@ import geopandas as gpd
 import pandas as pd
 import rasterio
 import yaml
+import xarray as xr
 from affine import Affine
 from rasterio.enums import Resampling
-from rasterio.transform import from_origin
-from rasterio.warp import reproject
+from rasterio.transform import array_bounds, from_origin
+from rasterio.warp import reproject, transform, transform_bounds
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -107,32 +109,52 @@ def add_attitude(frames: list[Frame], config_path: Path, config: dict, imu_sourc
         imu_path = config_path.resolve().parent / imu_path
     if not imu_path.is_file():
         raise ValueError(f"Raw IMU file does not exist: {imu_path}")
-    imu = gpd.read_file(imu_path)
-    required = {"datetime_utc", "roll_deg", "pitch_deg", "heading_deg"}
-    missing = required - set(imu.columns)
-    if missing:
-        raise ValueError(f"IMU file is missing columns: {', '.join(sorted(missing))}")
-    # GeoPackage timestamps are millisecond precision while TIFF tags parse as
-    # nanoseconds; explicitly normalise both before interpolation.
-    imu_times = pd.to_datetime(imu["datetime_utc"], utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy()
+    if imu_path.suffix.lower() == ".nc":
+        imu = xr.open_dataset(imu_path)
+        imu = imu.rename({
+            "ROLL": "ROLL_smooth",
+            "PITCH": "PITCH_smooth",
+            "THEAD": "THEAD_smooth",
+        })
+        required = {"time", "ROLL_smooth", "PITCH_smooth", "THEAD_smooth"}
+        missing = required - set(imu.variables)
+        if missing:
+            raise ValueError(f"NetCDF IMU is missing variables: {', '.join(sorted(missing))}")
+        imu_times = pd.to_datetime(imu["time"].values, utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy()
+        roll_values = np.asarray(imu["ROLL_smooth"].values, dtype=float)
+        pitch_values = np.asarray(imu["PITCH_smooth"].values, dtype=float)
+        yaw_values = np.asarray(imu["THEAD_smooth"].values, dtype=float)
+    else:
+        imu = gpd.read_file(imu_path)
+        required = {"datetime_utc", "roll_deg", "pitch_deg", "heading_deg"}
+        missing = required - set(imu.columns)
+        if missing:
+            raise ValueError(f"IMU file is missing columns: {', '.join(sorted(missing))}")
+        # GeoPackage timestamps are millisecond precision while TIFF tags parse as
+        # nanoseconds; explicitly normalise both before interpolation.
+        imu_times = pd.to_datetime(imu["datetime_utc"], utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy()
+        roll_values = imu["roll_deg"].to_numpy(float)
+        pitch_values = imu["pitch_deg"].to_numpy(float)
+        yaw_values = imu["heading_deg"].to_numpy(float)
     frame_times = pd.to_datetime([frame.acquired for frame in frames], utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy()
     order = np.argsort(imu_times)
     imu_times = imu_times[order]
     if frame_times[0] < imu_times[0] or frame_times[-1] > imu_times[-1]:
         raise ValueError("GeoTIFF acquisition times lie outside the supplied IMU time range")
-    roll = np.interp(frame_times, imu_times, imu["roll_deg"].to_numpy(float)[order])
-    pitch = np.interp(frame_times, imu_times, imu["pitch_deg"].to_numpy(float)[order])
+    roll = np.interp(frame_times, imu_times, roll_values[order])
+    pitch = np.interp(frame_times, imu_times, pitch_values[order])
     # Unwrapping preserves continuity across a 0/360-degree heading crossing.
-    yaw = np.rad2deg(np.interp(frame_times, imu_times, np.unwrap(np.deg2rad(imu["heading_deg"].to_numpy(float)[order]))))
+    yaw = np.rad2deg(np.interp(frame_times, imu_times, np.unwrap(np.deg2rad(yaw_values[order]))))
     print(f"Using raw IMU ({imu_source}): {imu_path}")
     return [Frame(frame.path, frame.acquired, frame.frame_id, (roll[index], pitch[index], yaw[index]), frame.ecc_norm)
             for index, frame in enumerate(frames)]
 
 
-def add_ecc_norm(frames: list[Frame], config_path: Path, config: dict, imu_source: str | None) -> tuple[list[Frame], float]:
+def add_ecc_norm(frames: list[Frame], config_path: Path, config: dict, imu_source: str | None) -> tuple[list[Frame], float | None]:
     raw_dir = str(config.get("drift_output_dir", ""))
     if not raw_dir:
-        raise ValueError("No drift_output_dir in config; cannot find ECC results")
+        print("No drift_output_dir configured; continuing without ECC data.")
+        return frames, None
     if "<imu>" in raw_dir:
         if imu_source is None:
             raise ValueError("drift_output_dir uses <imu>, but the IMU source could not be inferred")
@@ -141,7 +163,8 @@ def add_ecc_norm(frames: list[Frame], config_path: Path, config: dict, imu_sourc
     if not drift_csv.is_absolute():
         drift_csv = config_path.resolve().parent / drift_csv
     if not drift_csv.is_file():
-        raise ValueError(f"ECC time series does not exist: {drift_csv}")
+        print(f"ECC time series not found; continuing without ECC data: {drift_csv}")
+        return frames, None
     table = pd.read_csv(drift_csv)
     required = {"reference_time", "time", "runortho_shift_apply_norm_px"}
     missing = required - set(table.columns)
@@ -161,15 +184,20 @@ def add_ecc_norm(frames: list[Frame], config_path: Path, config: dict, imu_sourc
     return updated, shift_seconds
 
 
-def attitude_chart(frames: list[Frame], width: int, ecc_shift_seconds: float, panel_height: int = 280) -> tuple[Image.Image, list[int]]:
+def attitude_chart(frames: list[Frame], width: int, ecc_shift_seconds: float | None, panel_height: int = 280) -> tuple[Image.Image, list[int]]:
     chart = Image.new("RGB", (width, panel_height), (18, 18, 22))
     draw = ImageDraw.Draw(chart)
     font = ImageFont.load_default()
     left, right, top, bottom = 72, width - 18, 14, panel_height - 18
-    names = ("Roll", "Pitch", "Yaw", f"ECC norm (px; dt={ecc_shift_seconds:g}s)")
-    colors = ((80, 210, 255), (90, 235, 120), (255, 105, 100), (250, 205, 70))
-    values = np.column_stack((np.asarray([frame.attitude for frame in frames], dtype=float),
-                              np.asarray([frame.ecc_norm for frame in frames], dtype=float)))
+    names = ["Roll", "Pitch", "Yaw"]
+    colors = [(80, 210, 255), (90, 235, 120), (255, 105, 100)]
+    attitude_values = np.asarray([frame.attitude for frame in frames], dtype=float)
+    values = attitude_values
+    if ecc_shift_seconds is not None:
+        names.append(f"ECC norm (px; dt={ecc_shift_seconds:g}s)")
+        colors.append((250, 205, 70))
+        values = np.column_stack((attitude_values,
+                                  np.asarray([frame.ecc_norm for frame in frames], dtype=float)))
     marker_x: list[int] = []
     row_height = (bottom - top) / len(names)
     for row, (name, color) in enumerate(zip(names, colors)):
@@ -195,24 +223,20 @@ def attitude_chart(frames: list[Frame], width: int, ecc_shift_seconds: float, pa
 
 
 def track_grid(frames: list[Frame], width: int) -> tuple[Affine, int, int, rasterio.crs.CRS]:
+    target_crs = rasterio.crs.CRS.from_epsg(3857)
     bounds = []
-    with rasterio.open(frames[0].path) as first:
-        crs = first.crs
-    if crs is None:
-        raise ValueError("The first GeoTIFF has no CRS")
     for frame in frames:
         with rasterio.open(frame.path) as dataset:
-            if dataset.crs != crs:
-                raise ValueError(f"CRS differs from the first frame: {frame.path.name}")
-            bounds.append(dataset.bounds)
-    left = min(bound.left for bound in bounds)
-    bottom = min(bound.bottom for bound in bounds)
-    right = max(bound.right for bound in bounds)
-    top = max(bound.top for bound in bounds)
+            if dataset.crs is None:
+                raise ValueError(f"The frame has no CRS: {frame.path}")
+            bounds.append(transform_bounds(dataset.crs, target_crs, *dataset.bounds, densify_pts=21))
+    left = min(bound[0] for bound in bounds)
+    bottom = min(bound[1] for bound in bounds)
+    right = max(bound[2] for bound in bounds)
+    top = max(bound[3] for bound in bounds)
     resolution = (right - left) / width
     height = even(int(np.ceil((top - bottom) / resolution)))
-    return from_origin(left, top, resolution, resolution), even(width), height, crs
-
+    return from_origin(left, top, resolution, resolution), even(width), height, target_crs
 
 def display_range(frames: list[Frame], percentiles: tuple[float, float], stride: int) -> tuple[float, float]:
     samples = []
@@ -241,26 +265,26 @@ def merge_frame(mosaic: np.ndarray, frame: Frame, transform: Affine, crs: raster
 
 
 def encode(frames: list[Frame], output: Path, transform: Affine, width: int, height: int,
-           crs: rasterio.crs.CRS, display: tuple[float, float], fps: float, crf: int, ecc_shift_seconds: float) -> None:
+           crs: rasterio.crs.CRS, display: tuple[float, float], fps: float, crf: int, ecc_shift_seconds: float | None) -> None:
     temporary = output.with_name(f".{output.stem}.part.webm")
-    chart, marker_x = attitude_chart(frames, width, ecc_shift_seconds)
-    video_height = height + chart.height
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "rgb24",
+    video_height = height
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "rgba",
                "-video_size", f"{width}x{video_height}", "-framerate", str(fps), "-i", "-", "-c:v", "libvpx-vp9",
-               "-crf", str(crf), "-b:v", "0", "-row-mt", "1", "-threads", "8", "-pix_fmt", "yuv420p", "-y", str(temporary)]
+               "-crf", str(crf), "-b:v", "0", "-row-mt", "1", "-threads", "8", "-auto-alt-ref", "0",
+               "-pix_fmt", "yuva420p", "-y", str(temporary)]
     mosaic = np.full((height, width), np.nan, dtype=np.float32)
     process = subprocess.Popen(command, stdin=subprocess.PIPE)
     try:
+        # Video frame 1 corresponds directly to the first acquired ortho.
         for index, frame in enumerate(frames, start=1):
             merge_frame(mosaic, frame, transform, crs)
             low, high = display
+            valid = np.isfinite(mosaic)
             image = np.clip((mosaic - low) * 255 / (high - low), 0, 255)
             image = np.nan_to_num(image, nan=0.0, posinf=255.0, neginf=0.0).astype(np.uint8)
-            panel = chart.copy()
-            panel_draw = ImageDraw.Draw(panel)
-            panel_draw.line((marker_x[index - 1], 8, marker_x[index - 1], panel.height - 12), fill="white", width=2)
-            panel_draw.text((width - 180, 3), frame.acquired.split(" ")[-1], fill="white", font=ImageFont.load_default())
-            image = np.vstack((np.repeat(image[:, :, None], 3, axis=2), np.asarray(panel)))
+            rgb = np.repeat(image[:, :, None], 3, axis=2)
+            alpha = np.where(valid, 255, 0).astype(np.uint8)
+            image = np.dstack((rgb, alpha))
             assert process.stdin is not None
             process.stdin.write(image.tobytes())
             if index == 1 or index % 100 == 0 or index == len(frames):
@@ -278,6 +302,63 @@ def encode(frames: list[Frame], output: Path, transform: Affine, width: int, hei
         if temporary.exists():
             temporary.unlink()
 
+
+def write_manifest(output: Path, frames: list[Frame], transform_: Affine, width: int, height: int,
+                   crs: rasterio.crs.CRS, fps: float) -> Path:
+    raster_bounds = array_bounds(height, width, transform_)
+    wgs84 = rasterio.crs.CRS.from_epsg(4326)
+    west, south, east, north = transform_bounds(crs, wgs84, *raster_bounds, densify_pts=21)
+    leaflet_bounds = [[south, west], [north, east]]
+    frame_entries = []
+    for index, frame in enumerate(frames):
+        with rasterio.open(frame.path) as dataset:
+            frame_bounds = tuple(dataset.bounds)
+            if dataset.crs != wgs84:
+                frame_bounds = transform_bounds(dataset.crs, wgs84, *frame_bounds, densify_pts=21)
+                center_x, center_y = dataset.xy((dataset.height - 1) / 2, (dataset.width - 1) / 2)
+                center_x, center_y = transform(dataset.crs, wgs84, [center_x], [center_y])
+                center = [float(center_y[0]), float(center_x[0])]
+            else:
+                center_x, center_y = dataset.xy((dataset.height - 1) / 2, (dataset.width - 1) / 2)
+                center = [float(center_y), float(center_x)]
+        frame_entries.append({
+            "video_frame": index + 1,
+            "file": frame.path.name,
+            "time": frame.acquired,
+            "frame_id": frame.frame_id,
+            "attitude": list(frame.attitude) if frame.attitude is not None else None,
+            "ecc_norm": frame.ecc_norm if np.isfinite(frame.ecc_norm) else None,
+            "center": {"lat": center[0], "lon": center[1]},
+            "bbox": [float(frame_bounds[0]), float(frame_bounds[1]),
+                      float(frame_bounds[2]), float(frame_bounds[3])],
+            "bounds": {
+                "west": float(frame_bounds[0]), "south": float(frame_bounds[1]),
+                "east": float(frame_bounds[2]), "north": float(frame_bounds[3]),
+                "leaflet": [[float(frame_bounds[1]), float(frame_bounds[0])],
+                             [float(frame_bounds[3]), float(frame_bounds[2])]],
+            },
+        })
+    manifest_path = output.with_suffix(".manifest.json")
+    payload = {
+        "type": "ortho_track_manifest",
+        "version": 2,
+        "webm": output.name,
+        "transparent_background": True,
+        "initial_blank_video_frame": False,
+        "first_ortho_video_frame": 1,
+        "video_frame_count": len(frames),
+        "crs": crs.to_string(),
+        "bbox": [float(west), float(south), float(east), float(north)],
+        "bbox_crs": "EPSG:4326",
+        "canvas": {"width": width, "height": height,
+                   "bounds": [float(west), float(south), float(east), float(north)],
+                   "bounds_order": "west,south,east,north", "leaflet_bounds": leaflet_bounds,
+                   "raster_crs": crs.to_string(), "raster_bounds": list(raster_bounds),
+                   "transform": list(transform_), "fps": fps},
+        "frames": frame_entries,
+    }
+    manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return manifest_path
 
 def main() -> int:
     args = parse_args()
@@ -304,7 +385,9 @@ def main() -> int:
     display = display_range(frames, tuple(args.percentiles), args.sample_stride)
     print(f"Encoding {len(frames)} cumulative frames at {width}x{height}; display range={display}")
     encode(frames, output, transform, width, height, crs, display, args.fps, args.crf, ecc_shift_seconds)
+    manifest = write_manifest(output, frames, transform, width, height, crs, args.fps)
     print(f"Wrote {output}")
+    print(f"Wrote manifest {manifest}")
     return 0
 
 

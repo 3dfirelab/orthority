@@ -4,24 +4,32 @@
 flightname: az260002
 transect: "003_320256"
 imu_source: safire
+dataset_config: config/config-piper03.yaml
 
 input_dir: /data/shared/PIPER/az260002/Transects/003_320256_safire/tif_f1
 reference_dir: /data/shared/PIPER/az260002/Transects/003_320256_safire/full_ortho_f1_safire
 imu: /data/shared/PIPER/az260002/safire/az260002_safire.gpkg
 calibration: /data/shared/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration_safire.json
+int_param: /data/shared/PIPER/az260002/Transects/003_320256_safire/io/az260002_int_param.yaml
+dem: /data/shared/PIPER/az260002/dem/az260002_dem_1m.tif
 output_dir: /data/shared/PIPER/az260002/Transects/003_320256_safire/optical_flow_drift_safire
 
 # One roll/pitch/yaw correction triplet per spline knot.  Corrections for each
 # image are evaluated from this 2-second spline, rather than solved per frame.
-spline_knot_spacing_s: 2.0
+spline_knot_spacing_s: 1.0
 solve_parameters: [roll, pitch, yaw]
 spline_smoothness_weight: 10.0
 spline_curvature_weight: 50.0
 opk_prior_std_deg: [1.0, 1.0, 2.0]
+opk_pair_offset_s: 1.0
+opk_range_deg: [2.0, 2.0, 2.0]
+opk_max_iterations: 150
+opk_parameter_tolerance: 0.001
+opk_cost_tolerance: 0.0001
 
-# Pair each image with neighbours every 0.2 s over a +/- 1.0 s window.
-# At the 0.1 s acquisition cadence these are frame offsets +/-2 through +/-10.
-link_offsets_s: [-1.0, -0.8, -0.6, -0.4, -0.2, 0.2, 0.4, 0.6, 0.8, 1.0]
+# Pair each image with neighbours every 0.1 s over a +/- 0.5 s window.
+# At the 0.1 s acquisition cadence these are frame offsets +/-1 through +/-5.
+link_offsets_s: [-0.5, -0.4, -0.3, -0.2, -0.1, 0.1, 0.2, 0.3, 0.4, 0.5]
 link_weights:
   0.2: 1.0
   0.4: 1.0

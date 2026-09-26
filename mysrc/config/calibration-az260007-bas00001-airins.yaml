@@ -1,0 +1,51 @@
+# One-pair IMU/camera boresight calibration for az260007 / bas00001.
+flight_name: az260007
+imu_source: 'airins'
+
+imu: /data/shared/PIPER/az260007/imu/TEST-ATLANS-2026_SAFIRE-PA23_SAFIRE_CORE_AIRINS_100HZ_20260910_az260007_L1_V1.nc
+int_param: /data/shared/PIPER/az260007/camera-io/camera-az260007-320.yaml
+dem: /data/shared/PIPER/az260007/Transects/bas00001-airins-calib00001/dem/bas00001_rgealti.tif
+output: /data/shared/PIPER/az260007/Transects/bas00001-airins-calib00001/calib/imu_camera_calibration.json
+work_dir: /tmp/orthority_calibration_az260007_bas00001-airins-calib00001
+
+pose_model: separate_lever_arm_boresight
+#initial_xyz: [0.0, 0.0, 0.0] 
+initial_xyz: [-2.6, 0.28, 0.05] #ARINS
+initial_opk: [0.0, 0.0, 0.0]
+
+# Calibrate boresight only; XYZ remains fixed at zero.
+optimize_parameters: [omega, phi, kappa]
+xyz_bounds:
+  - [-1., 1.]
+  - [-1., 1.]
+  - [-200., 5.]
+opk_bounds:
+  - [-20.0, 20.0]
+  - [-20.0, 20.0]
+  - [-30.0, 30.0]
+initial_step_xyz: [0.5, 0.5, 0.5]
+initial_step_opk: [0.5, 0.5, 0.5]
+
+global_optimizer: differential_evolution
+global_iterations: 30
+global_population: 10
+global_tolerance: 0.01
+full_optimization_starts: 1
+max_iterations: 300
+max_dimension: 2048
+minimum_overlap: 0.5
+overlap_penalty: 0.5
+parameter_tolerance: 0.001
+cost_tolerance: 0.0001
+
+pairs:
+- image: /data/shared/PIPER/az260007/Transects/bas00001/tif_f1_320/az260007_20260910_150213-3896.tif
+  reference: /data/shared/PIPER/az260007/Transects/bas00001/tif_f1_ortho/az260007_20260910_150213-3896_modified.tif
+  image_band: 1
+  reference_band: 1
+  weight: 1.0
+- image: /data/shared/PIPER/az260007/Transects/bas00001/tif_f1_320/az260007_20260910_150213-3950.tif
+  reference: /data/shared/PIPER/az260007/Transects/bas00001/tif_f1_ortho/az260007_20260910_150213-3950_modified.tif
+  image_band: 1
+  reference_band: 1
+  weight: 1.0

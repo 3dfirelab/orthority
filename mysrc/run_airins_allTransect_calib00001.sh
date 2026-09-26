@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#SBATCH --partition=prod
+#SBATCH --cpus-per-task=20
+#SBATCH --mem=20G
+#SBATCH --job-name=airins-az260007
+
+set -euo pipefail
+
+cd "${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is not set}"
+
+./run_transect.sh \
+    --flightname az260007 \
+    --flight-date 20260910 \
+    --transect-prefix bas \
+    --transect-number 1 \
+    --imu-name airins \
+    --imu-file /data/shared/PIPER/az260007/imu/TEST-ATLANS-2026_SAFIRE-PA23_SAFIRE_CORE_AIRINS_100HZ_20260910_az260007_L1_V1.nc\
+    --note "smooth flight" \
+    --calib-transect 1 \
+    --overwrite true 
+
+
+./run_transect.sh \
+    --flightname az260007 \
+    --flight-date 20260910 \
+    --transect-prefix bas \
+    --transect-number 2 \
+    --imu-name airins \
+    --imu-file /data/shared/PIPER/az260007/imu/TEST-ATLANS-2026_SAFIRE-PA23_SAFIRE_CORE_AIRINS_100HZ_20260910_az260007_L1_V1.nc\
+    --note "smooth flight" \
+    --calib-transect 1 \
+    --calib-file /data/shared/PIPER/az260007/Transects/bas00001-airins-calib00001/calib/imu_camera_calibration_airins.json\
+    --overwrite true   
+
+
+./run_transect.sh \
+    --flightname az260007 \
+    --flight-date 20260910 \
+    --transect-prefix bas \
+    --transect-number 3 \
+    --imu-name airins \
+    --imu-file /data/shared/PIPER/az260007/imu/TEST-ATLANS-2026_SAFIRE-PA23_SAFIRE_CORE_AIRINS_100HZ_20260910_az260007_L1_V1.nc\
+    --note "smooth flight" \
+    --calib-transect 1 \
+    --calib-file /data/shared/PIPER/az260007/Transects/bas00001-airins-calib00001/calib/imu_camera_calibration_airins.json\
+    --overwrite true   
+
+
+./run_transect.sh \
+    --flightname az260007 \
+    --flight-date 20260910 \
+    --transect-prefix bas \
+    --transect-number 4 \
+    --imu-name airins \
+    --imu-file /data/shared/PIPER/az260007/imu/TEST-ATLANS-2026_SAFIRE-PA23_SAFIRE_CORE_AIRINS_100HZ_20260910_az260007_L1_V1.nc\
+    --note "turbulent flight" \
+    --calib-transect 1 \
+    --calib-file /data/shared/PIPER/az260007/Transects/bas00001-airins-calib00001/calib/imu_camera_calibration_airins.json\
+    --overwrite true   

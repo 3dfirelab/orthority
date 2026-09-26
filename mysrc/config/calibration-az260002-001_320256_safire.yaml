@@ -1,0 +1,44 @@
+# One-pair IMU/camera boresight calibration for az260002 / 001_320256_safire
+flight_name: az260002
+
+imu: /data/shared/PIPER/az260002/imu/az260002_safire.gpkg
+int_param: /data/shared/PIPER/az260002/Transects/001_320256_safire/io/az260002_int_param.yaml
+dem: /data/shared/PIPER/az260002/Transects/001_320256_safire/dem/001_320256_safire_rgealti.tif
+output: /data/shared/PIPER/az260002/Transects/001_320256_safire/calib/imu_camera_calibration.json
+work_dir: /tmp/orthority_calibration_az260002_001_320256_safire
+
+pose_model: separate_lever_arm_boresight
+initial_xyz: [-2.6, 0.28, 0.05]
+initial_opk: [0.0, 0.0, 0.0]
+
+# Calibrate boresight only; XYZ remains fixed at zero.
+optimize_parameters: [omega, phi, kappa]
+xyz_bounds:
+  - [-1., 1.]
+  - [-1., 1.]
+  - [-5., 5.]
+opk_bounds:
+  - [-20.0, 20.0]
+  - [-20.0, 20.0]
+  - [-30.0, 30.0]
+initial_step_xyz: [0.5, 0.5, 0.5]
+initial_step_opk: [0.5, 0.5, 0.5]
+
+global_optimizer: differential_evolution
+global_iterations: 30
+global_population: 10
+global_tolerance: 0.01
+full_optimization_starts: 1
+max_iterations: 300
+max_dimension: 2048
+minimum_overlap: 0.5
+overlap_penalty: 0.5
+parameter_tolerance: 0.001
+cost_tolerance: 0.0001
+
+pairs:
+  - image:     /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000062.tif
+    reference: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000062_modified.tif
+    image_band: 1
+    reference_band: 1
+    weight: 1.0

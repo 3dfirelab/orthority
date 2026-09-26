@@ -1,5 +1,5 @@
 dirTelops: '/data/shared/PIPER/az260002/telops'
-extractionName: '001_320256_safire'
+extractionName: '001_320256_<imu>'
 flightname: 'az260002'
 flightdate: 20260520
 start_FrameID: 7436606
@@ -17,13 +17,13 @@ calibration:
   safire: '/data/shared/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration_safire.json'
   loa: '/data/shared/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration_loa.json'
   safire_post: '/data/shared/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration_safire_post.json'
-input_dir: '/data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1'
-output_dir: '/data/shared/PIPER/az260002/Transects/001_320256_safire/full_ortho_f1'
+input_dir: '/data/shared/PIPER/az260002/Transects/001_320256_<imu>/tif_f1'
+output_dir: '/data/shared/PIPER/az260002/Transects/001_320256_<imu>/full_ortho_f1'
 
 # Local IMU drift estimation.
-drift_input_dir: '/data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1'
-drift_reference_dir: '/data/shared/PIPER/az260002/Transects/001_320256_safire/full_ortho_f1'
-drift_output_dir: '/data/shared/PIPER/az260002/Transects/001_320256_safire/imu_drift'
+drift_input_dir: '/data/shared/PIPER/az260002/Transects/001_320256_<imu>/tif_f1'
+drift_reference_dir: '/data/shared/PIPER/az260002/Transects/001_320256_<imu>/full_ortho_f1'
+drift_output_dir: '/data/shared/PIPER/az260002/Transects/001_320256_<imu>/imu_drift'
 drift_pair_separation: 10
 drift_window_step: 10
 drift_max_iterations: 150

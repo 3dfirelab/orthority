@@ -1,0 +1,31 @@
+# Orthorectification configuration for az260002 / 001_320256_safire
+# Calibration is intentionally skipped: all IMU-camera corrections are zero.
+
+dirTelops: '/data/shared/PIPER/az260002/telops'
+extractionName: '001_320256_safire'
+flightname: 'az260002'
+flightdate: 20260520
+
+start_FrameID: null
+end_FrameID: null
+start_dt: null
+end_dt: null
+dt_period: 0.1
+idimgs: [1]
+filter: 1
+image_glob: '*.tif'
+
+# Existing raw SAFIRE navigation data; no calibration JSON is supplied.
+imu:         '/data/shared/PIPER/az260002/imu/az260002_safire.gpkg'
+calibration: '/data/shared/PIPER/az260002/Transects/001_320256_safire/calib/imu_camera_calibration.json'
+
+input_dir: '/data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1'
+output_dir: '/data/shared/PIPER/az260002/Transects/001_320256_safire/full_ortho_f1'
+dem: '/data/shared/PIPER/az260002/Transects/001_320256_safire/dem/001_320256_safire_rgealti.tif'
+int_param: '/data/shared/PIPER/az260002/Transects/001_320256_safire/io/az260002_int_param.yaml'
+
+# Explicit zero correction for reproducibility. The runner uses these values
+# when no calibration file is provided.
+correction_xyz: [0.0, 0.0, 0.0]
+correction_opk: [0.0, 0.0, 0.0]
+

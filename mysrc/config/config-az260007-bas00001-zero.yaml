@@ -1,0 +1,23 @@
+# Zero-correction orthorectification run for az260007 / bas00001.
+dirTelops: '/data/shared/PIPER/az260007/telops'
+extractionName: 'bas00001'
+flightname: 'az260007'
+flightdate: 20260910
+start_FrameID: null
+end_FrameID: null
+start_dt: null
+end_dt: null
+dt_period: 0.1
+idimgs: [1]
+filter: 1
+image_glob: '*.tif'
+
+imu: '/data/shared/PIPER/az260007/imu/TEST-ATLANS-2026_SAFIRE-PA23_SAFIRE_CORE_ATLANS_200HZ_20260910_az260007_L1_V1.nc'
+calibration: null
+input_dir: '/data/shared/PIPER/az260007/Transects/bas00001/tif_f1_320'
+output_dir: '/data/shared/PIPER/az260007/Transects/bas00001/full_ortho_f1_zero'
+dem: '/data/shared/PIPER/az260007/Transects/bas00001/dem/bas00001_rgealti.tif'
+int_param: '/data/shared/PIPER/az260007/Transects/bas00001/io/camera-az260007-bas00001-320.yaml'
+
+correction_xyz: [0.0, 0.0, 500.0]
+correction_opk: [0.0, 0.0, 0.0]

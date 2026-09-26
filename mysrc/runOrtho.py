@@ -14,6 +14,7 @@ import orthority as oty
 import glob 
 import tifffile
 import json 
+import re
 from pathlib import Path
 import tempfile
 import rioxarray  # ensures .rio accessor is registered
@@ -100,6 +101,42 @@ def affine(x, m, p):
 
 
 #################################################
+def copy_source_exif_metadata(source_path, output_path):
+    """Copy acquisition EXIF tags into the final ortho TIFF."""
+    exiftool = shutil.which("exiftool")
+    if exiftool is None:
+        print("WARNING: exiftool not found; Date/Time Original was not written.")
+        return
+    command = [
+        exiftool, "-overwrite_original", "-TagsFromFile", str(source_path),
+        "-EXIF:DateTimeOriginal", "-EXIF:SubSecTimeOriginal",
+        "-EXIF:ExposureTime", "-EXIF:ExifVersion", str(output_path),
+    ]
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def read_source_metadata(path):
+    """Read acquisition metadata that should survive ortho raster rewriting."""
+    preserved = {}
+    with tifffile.TiffFile(path) as tif:
+        page = tif.pages[0]
+        date_tag = page.tags.get("DateTime")
+        if date_tag is not None:
+            preserved["TIFFTAG_DATETIME"] = str(date_tag.value)
+        exif_tag = page.tags.get("ExifTag")
+        exif = exif_tag.value if exif_tag is not None and isinstance(exif_tag.value, dict) else {}
+        for source_name, output_name in (("DateTimeOriginal", "DateTimeOriginal"),
+                                         ("SubsecTimeOriginal", "SubSecTimeOriginal"),
+                                         ("ExposureTime", "ExposureTime"),
+                                         ("ExifVersion", "ExifVersion")):
+            if source_name in exif:
+                value = exif[source_name]
+                if isinstance(value, tuple) and len(value) == 2:
+                    value = value[0] / value[1] if value[1] else value[0]
+                preserved[output_name] = str(value)
+    return preserved
+
+
 def orthro(
     args,
     transectname,
@@ -113,7 +150,10 @@ def orthro(
     demFile,
     intparamFile,
     filtre=1,
+    image_glob=None,
     pose_model=imuNcOoGeojson.DEFAULT_POSE_MODEL,
+    drift_model=None,
+    time_shift_to_add_to_image=0.0,
 ):
    
     x, y, z = args[:3]
@@ -121,7 +161,8 @@ def orthro(
 
     correction_opk = np.array([o,p,k])
     correction_xyz = np.array([x,y,z])
-    src_files = sorted(glob.glob(f"{indirimg}/f{filtre}*.tif"))
+    image_pattern = image_glob or f"f{filtre}*.tif"
+    src_files = sorted(glob.glob(f"{indirimg}/{image_pattern}"))
     if not src_files:
         raise ValueError(f"No input images found in {indirimg}")
 
@@ -143,19 +184,31 @@ def orthro(
     '''
     
     #imu = xr.open_dataset(indir+imufile)
-    imu = gpd.read_file(imufile)
-    imu = imu.dropna(subset=['latitude'])
-
-    imu = imu.rename(columns={'datetime_utc': 'time'})
-    imu = imu.rename(columns={'latitude': 'LATITUDE'})
-    imu = imu.rename(columns={'longitude': 'LONGITUDE'})
-    imu = imu.rename(columns={'altitude_m': 'ALTITUDE'})
-    imu = imu.rename(columns={'roll_deg': 'ROLL_smooth'})
-    imu = imu.rename(columns={'pitch_deg': 'PITCH_smooth'})
-    imu = imu.rename(columns={'heading_deg': 'THEAD_smooth'})
+    if Path(imufile).suffix.lower() == ".nc":
+        # SAFIRE NetCDF navigation product. Keep it as xarray because
+        # imutogeojson supports xarray interpolation directly.
+        imu = xr.open_dataset(imufile)
+        imu = imu.rename({
+            "HEIGHT_WGS84": "ALTITUDE",
+            "ROLL": "ROLL_smooth",
+            "PITCH": "PITCH_smooth",
+            "THEAD": "THEAD_smooth",
+        })
+    else:
+        imu = gpd.read_file(imufile)
+        imu = imu.dropna(subset=["latitude"])
+        imu = imu.rename(columns={
+            "datetime_utc": "time",
+            "latitude": "LATITUDE",
+            "longitude": "LONGITUDE",
+            "altitude_m": "ALTITUDE",
+            "roll_deg": "ROLL_smooth",
+            "pitch_deg": "PITCH_smooth",
+            "heading_deg": "THEAD_smooth",
+        })
 
     #for idimg in idimgs[:1]:
-    src_files = sorted(glob.glob(f"{indirimg}/f{filtre}*.tif"))
+    src_files = sorted(glob.glob(f"{indirimg}/{image_pattern}"))
     df_calib_f = None
     if filtre >= 3:
         calibration_csv = (
@@ -177,15 +230,19 @@ def orthro(
         print(os.path.basename(src_file))
         base = os.path.basename(src_file)       # "f1-000000001.tif"
         id_str = base.replace(f"f{filtre}-", "").replace(".tif", "")
-        frame_id = int(id_str)    
+        frame_match = re.search(r"-(\d+)$", id_str)
+        frame_id = int(frame_match.group(1)) if frame_match else int(id_str)    
     
+        source_metadata = read_source_metadata(src_file)
         with tifffile.TiffFile(src_file) as tif:
             # Get ImageDescription tag
-            description = tif.pages[0].tags["ImageDescription"].value
-            # Convert JSON string to dictionary
-            metadata = json.loads(description)
-            # Access ExposureTime
-            exposure_time = metadata["ExposureTime"]
+            description_tag = tif.pages[0].tags.get("ImageDescription")
+            description = description_tag.value if description_tag is not None else None
+            # Some acquisition TIFFs have no JSON ImageDescription.
+            metadata = json.loads(description) if description else {}
+            # Raw frames without exposure metadata are already treated as
+            # linear image values by this workflow.
+            exposure_time = float(metadata.get("ExposureTime", 1.0))
             # Read image data
             data = tif.asarray()
         
@@ -244,7 +301,10 @@ def orthro(
             #params_['flag_plot'] = True
             #optimizeAlignement_telops_f1.residual( result.x , params_ )
         '''
-        print(correction_opk)
+        print(
+            f"correction_xyz={np.asarray(correction_xyz, dtype=float).tolist()} "
+            f"correction_opk={np.asarray(correction_opk, dtype=float).tolist()}"
+        )
         print(src_file_)
         print('process imu ...')
        
@@ -252,6 +312,8 @@ def orthro(
             imu, wkdir, indirimg, flightname,
             correction_xyz, correction_opk, [src_file_],
             pose_model=pose_model,
+            drift_model=drift_model,
+            time_shift_to_add_to_image=time_shift_to_add_to_image,
         )
         print('done                ') 
 
@@ -280,13 +342,19 @@ def orthro(
             profile = src.profile
             existing_meta = src.tags()
 
-        # merge metadata
+        # Merge output metadata, Telops JSON metadata, and source acquisition
+        # tags after orthorectification has created a new raster.
+        existing_meta.update(source_metadata)
         existing_meta.update(metadata)
 
         # write back preserving CRS and transform
         with rasterio.open(out_file_, "w", **profile) as dst:
             dst.write(img)
             dst.update_tags(**existing_meta)
+
+        # Rasterio/GDAL does not write EXIF DateTimeOriginal. Copy the actual
+        # EXIF tags after the ortho GeoTIFF has been written.
+        copy_source_exif_metadata(src_file, out_file_)
 
     #save correction history
     df = pd.DataFrame({
@@ -387,6 +455,18 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--drift-model",
+        type=Path,
+        default=None,
+        help="CSV with time, extra_omega, extra_phi, and extra_kappa columns.",
+    )
+    parser.add_argument(
+        "--time-shift-to-add-to-image",
+        type=float,
+        default=None,
+        help="Seconds added to each image timestamp before IMU interpolation (e.g. 2).",
+    )
+    parser.add_argument(
         "--imu-source",
         type=str,
         default=None,
@@ -405,31 +485,64 @@ if __name__ == "__main__":
     flightdate = cfg["flightdate"]
     transectname = cfg["extractionName"]
     filtre = int(cfg.get("filter", 1))
+    time_shift_to_add_to_image = (
+        args.time_shift_to_add_to_image
+        if args.time_shift_to_add_to_image is not None
+        else float(cfg.get("time_shift_to_add_to_image", 0.0))
+    )
     data_root = Path(cfg["dirTelops"]).expanduser().resolve().parent
+    # A YAML label is useful even when ``imu`` is a single direct path: it
+    # names temporary/intermediate products without selecting another file.
+    imu_selector = args.imu_source
+    if imu_selector is None and isinstance(cfg.get("imu"), dict):
+        imu_selector = cfg.get("imu_source")
+    imufile, resolved_source = imuNcOoGeojson.resolve_imu_path(
+        cfg, args.config.resolve().parent, imu_selector
+    )
+    imu_source = resolved_source or cfg.get("imu_source")
+    if "<imu>" in transectname:
+        transectname = transectname.replace("<imu>", imu_source or "")
     indir = data_root / "Transects" / transectname
 
     def config_path(key):
         if key not in cfg:
             raise ValueError(f"Missing required configuration key: {key}")
-        path = Path(cfg[key]).expanduser()
+        raw_path = str(cfg[key])
+        if "<imu>" in raw_path:
+            if imu_source is None:
+                raise ValueError(f"{key} uses <imu>; pass --imu-source.")
+            raw_path = raw_path.replace("<imu>", imu_source)
+        path = Path(raw_path).expanduser()
         if not path.is_absolute():
             path = args.config.resolve().parent / path
         return path.resolve()
 
     indirimg = config_path("input_dir")
     outdir = config_path("output_dir")
-    imufile, imu_source = imuNcOoGeojson.resolve_imu_path(
-        cfg, args.config.resolve().parent, args.imu_source
+    if imu_selector is not None and "<imu>" not in str(cfg["output_dir"]):
+        # Put each source in its sibling transect, rather than retaining the
+        # source named in extractionName for every run.
+        transect_prefix = transectname.rsplit("_", 1)[0]
+        source_transect = f"{transect_prefix}_{imu_source}"
+        outdir = outdir.parent.with_name(source_transect) / (
+            f"{outdir.name}_{imu_source}"
+        )
+    # Prefer explicit paths from the dataset configuration. The fallback
+    # keeps compatibility with the older PIPER directory layout.
+    demFile = (
+        config_path("dem")
+        if "dem" in cfg
+        else data_root / "dem" / f"{flightname}_dem_1m.tif"
     )
-    if imu_source is not None:
-        # Several imu sources share this YAML; keep their outputs apart.
-        outdir = outdir.with_name(f"{outdir.name}_{imu_source}")
-    demFile = data_root / "dem" / f"{flightname}_dem_1m.tif"
-    intparamFile = indir / "io" / f"{flightname}_int_param.yaml"
+    intparamFile = (
+        config_path("int_param")
+        if "int_param" in cfg
+        else indir / "io" / f"{flightname}_int_param.yaml"
+    )
     calibration_path = args.calibration
     if calibration_path is None and cfg.get("calibration"):
         calibration_path, _ = imuNcOoGeojson.resolve_imu_path(
-            cfg, args.config.resolve().parent, imu_source, key="calibration"
+            cfg, args.config.resolve().parent, imu_selector, key="calibration"
         )
 
     for label, path in (
@@ -442,8 +555,10 @@ if __name__ == "__main__":
             raise FileNotFoundError(f"{label} not found: {path}")
 
     if os.path.isdir(outdir):
+        print("Removing existing ortho output directory:", outdir)
         shutil.rmtree(outdir)
     os.makedirs(outdir, exist_ok=True)
+    print("Created fresh ortho output directory:", outdir)
 
     wkdir = Path(f"/tmp/orthority_wkdir_ortho_{transectname}_{imu_source or 'default'}")
     if os.path.isdir(wkdir): shutil.rmtree(wkdir)
@@ -472,9 +587,11 @@ if __name__ == "__main__":
             raise ValueError("Calibration corrections must each contain 3 values.")
     else:
         pose_model = imuNcOoGeojson.DEFAULT_POSE_MODEL
-        correction_xyz = np.zeros(3)
-        correction_opk = np.zeros(3)
-        print("No calibration specified; using zero XYZ/OPK correction.")
+        correction_xyz = np.asarray(cfg.get("correction_xyz", [0.0, 0.0, 0.0]), dtype=float)
+        correction_opk = np.asarray(cfg.get("correction_opk", [0.0, 0.0, 0.0]), dtype=float)
+        if correction_xyz.shape != (3,) or correction_opk.shape != (3,):
+            raise ValueError("Configured correction_xyz and correction_opk must each contain 3 values.")
+        print("No calibration specified; using corrections from YAML.")
 
     print("input:", indirimg)
     print("output:", outdir)
@@ -482,6 +599,15 @@ if __name__ == "__main__":
     print("correction_xyz:", correction_xyz)
     print("correction_opk:", correction_opk)
     print("pose_model:", pose_model)
+    print("time_shift_to_add_to_image:", time_shift_to_add_to_image, "s")
+    if time_shift_to_add_to_image != 0.0:
+        print("###############")
+        print(
+            "WARNING: IMAGE TIME SHIFT APPLIED: "
+            f"image timestamps will be shifted by {time_shift_to_add_to_image:+.6f} s "
+            "before IMU interpolation."
+        )
+        print("###############")
     orthro(
         [*correction_xyz, *correction_opk],
         transectname,
@@ -495,6 +621,9 @@ if __name__ == "__main__":
         str(demFile),
         str(intparamFile),
         filtre=filtre,
+        image_glob=cfg.get("image_glob"),
         pose_model=pose_model,
+        drift_model=args.drift_model,
+        time_shift_to_add_to_image=time_shift_to_add_to_image,
     )
     

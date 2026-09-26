@@ -31,7 +31,7 @@ def main() -> int:
 
     calibration_suffix = f"{args.imuname}-calib{args.calib_transect:05d}"
     output_transect = args.transectname
-    if not output_transect.endswith(calibration_suffix):
+    if not re.search(r"-calib\d{5}$", output_transect):
         output_transect = f"{output_transect}-{calibration_suffix}"
 
     calibration = Path(args.defaultcalibration).expanduser()

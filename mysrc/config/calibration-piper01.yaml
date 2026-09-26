@@ -6,7 +6,7 @@ imu:
   safire_post: /data/shared/PIPER/az260002/safire/az260002_safire_postprocessed.gpkg
 int_param: /data/shared/PIPER/az260002/Transects/001_320256_safire/io/az260002_int_param.yaml
 dem: /data/shared/PIPER/az260002/dem/az260002_dem_1m.tif
-output: /data/shared/PIPER/az260002/Transects/001_320256_safire/imu_camera_calibration.json
+output: /data/shared/PIPER/az260002/Transects/001_320256_<imu>/imu_camera_calibration_<imu>.json
 work_dir: /tmp/orthority_imu_calibration_001
 pose_model: legacy_coupled  #separate_lever_arm_boresight or legacy_coupled
 
@@ -63,10 +63,10 @@ pairs:
     image_band: 1
     reference_band: 1
     weight: 1.0
-#- image: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000950.tif
-#reference: /home/paugam/Data/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000950_modified.tif
-  - image: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000001009.tif
-    reference: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000001009_modified.tif
+  - image: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000000950.tif
+    reference: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000000950_modified.tif
+      # - image: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1/f1-000001009.tif
+      #reference: /data/shared/PIPER/az260002/Transects/001_320256_safire/tif_f1_ortho/f1-000001009_modified.tif
     image_band: 1
     reference_band: 1
     weight: 1.0
