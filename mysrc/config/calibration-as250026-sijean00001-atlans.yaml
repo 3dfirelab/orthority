@@ -1,0 +1,57 @@
+dirTelops: '/data/shared/ATR42/as250026/telops'
+extractionName: 'Sijean01'
+flightname: 'SILEX_test001'
+start_FrameID: 805960
+end_FrameID: 824985
+start_dt: null
+end_dt: null
+dt_period: 0.1
+
+# One-pair IMU/camera boresight calibration for az260007 / bas00001.
+root_data_dir: /home/paugam/Data/ATR42/
+flight_name: as250026
+imu_source: 'atlans'
+
+imu: /home/paugam/Data/ATR42/as250026/imu/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1.nc
+int_param: /home/paugam/Data/ATR42/as250026/camera-io/camera-as250026.yaml
+dem: /home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/dem/sijean00001_rgealti.tif
+output: /home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/calib/imu_camera_calibration.json
+work_dir: /tmp/orthority_calibration_as250026_sijean01-atlans
+
+pose_model: separate_lever_arm_boresight
+initial_xyz: [-4.79, 0.245, 0.20]
+initial_opk: [0.0, 0.0, 0.0]
+
+# Calibrate boresight only; XYZ remains fixed at zero.
+optimize_parameters: [omega, phi, kappa]
+xyz_bounds:
+  - [-1., 1.]
+  - [-1., 1.]
+  - [-200., 5.]
+opk_bounds:
+  - [-20.0, 20.0]
+  - [-20.0, 20.0]
+  - [-30.0, 30.0]
+initial_step_xyz: [0.5, 0.5, 0.5]
+initial_step_opk: [0.5, 0.5, 0.5]
+
+global_optimizer: differential_evolution
+global_iterations: 30
+global_population: 10
+global_tolerance: 0.01
+full_optimization_starts: 1
+max_iterations: 300
+max_dimension: 2048
+minimum_overlap: 0.5
+overlap_penalty: 0.5
+parameter_tolerance: 0.001
+cost_tolerance: 0.0001
+
+pairs:
+- image: /home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/tif_f1/f1-000000001.tif
+  reference: /home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/tif_f1_ortho/f1-000000001_modified.tif
+  image_band: 1
+  reference_band: 1
+  weight: 1.0
+
+
