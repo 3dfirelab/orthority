@@ -381,12 +381,14 @@ def _load_imu(path: Path):
         "THEAD_smooth",
     ]
     if path.suffix.lower() == ".nc":
-        imu = xr.open_dataset(path).rename({
+        imu = xr.open_dataset(path)
+        rename = {
             "HEIGHT_WGS84": "ALTITUDE",
             "ROLL": "ROLL_smooth",
             "PITCH": "PITCH_smooth",
             "THEAD": "THEAD_smooth",
-        })
+        }
+        imu = imu.rename({key: value for key, value in rename.items() if key in imu})
         missing = [column for column in required if column not in imu]
         if missing:
             raise ValueError(f"IMU file is missing columns: {', '.join(missing)}")
@@ -587,7 +589,9 @@ def _safe_filename_part(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
 
 
-def _persist_validation_plots(config: dict, validation_dir: Path) -> list[Path]:
+def _persist_validation_plots(
+    config: dict, validation_dir: Path, label: str | None = None
+) -> list[Path]:
     import matplotlib.pyplot as plt
 
     output_dir = Path(config["output"]).parent
@@ -601,8 +605,9 @@ def _persist_validation_plots(config: dict, validation_dir: Path) -> list[Path]:
     if not sources:
         return []
 
+    suffix = f"_{label}" if label else ""
     destination = output_dir / (
-        f"imu_camera_calibration_{imu_name}_{transect_name}.png"
+        f"imu_camera_calibration_{imu_name}_{transect_name}{suffix}.png"
     )
     if len(sources) == 1:
         shutil.copy2(sources[0][1], destination)
@@ -625,6 +630,28 @@ def _persist_validation_plots(config: dict, validation_dir: Path) -> list[Path]:
         plt.close(figure)
     print(f"Transect calibration plot: {destination}")
     return [destination]
+
+
+def _persist_ortho_rasters(
+    config: dict, evaluation_dir: Path, label: str
+) -> list[Path]:
+    """Copy the candidate orthorectified TIFFs out of the (often /tmp) work dir."""
+    output_dir = Path(config["output"]).parent
+    imu_name = _safe_filename_part(Path(config["imu"]).stem)
+    transect_name = _safe_filename_part(output_dir.name)
+    destinations = []
+    for index in range(len(config["pairs"])):
+        source = evaluation_dir / f"candidate_{index:03d}.tif"
+        if not source.is_file():
+            continue
+        destination = output_dir / (
+            f"imu_camera_calibration_{imu_name}_{transect_name}_{label}"
+            f"_candidate_{index + 1:03d}.tif"
+        )
+        shutil.copy2(source, destination)
+        destinations.append(destination)
+        print(f"Candidate ortho raster: {destination}")
+    return destinations
 
 
 def _normalized_correlation(
@@ -723,6 +750,7 @@ class CalibrationObjective:
         self.keep_outputs = False
         self.show_plots = False
         self.plot_outputs = True
+        self.output_subdir = "validation"
 
     def physical_parameters(self, normalized: np.ndarray) -> np.ndarray:
         normalized = np.asarray(normalized, dtype=float)
@@ -742,7 +770,7 @@ class CalibrationObjective:
         correction_xyz = parameters[:3]
         correction_opk = parameters[3:]
         evaluation_dir = self.work_dir / (
-            "validation" if self.keep_outputs else "current"
+            self.output_subdir if self.keep_outputs else "current"
         )
         if evaluation_dir.exists():
             shutil.rmtree(evaluation_dir)
@@ -1072,6 +1100,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             fixed_parameters=initial,
             active_indices=active_indices,
         )
+
+        initial_normalized = (
+            (initial[active_indices] - lower[active_indices])
+            / (upper[active_indices] - lower[active_indices])
+        )
+        initial_state_objective = CalibrationObjective(
+            config,
+            imu,
+            references,
+            lower,
+            upper,
+            fixed_parameters=initial,
+            active_indices=active_indices,
+        )
+        initial_state_objective.keep_outputs = True
+        initial_state_objective.output_subdir = "initial"
+        initial_state_objective.show_plots = args.show_plots
+        initial_cost = initial_state_objective(initial_normalized)
+        print(f"Initial state (before optimization) cost: {initial_cost:.6f}")
+        _persist_validation_plots(config, work_dir / "initial", label="initial")
+        _persist_ortho_rasters(config, work_dir / "initial", label="initial")
+
         if args.evaluate:
             parameters = _load_calibration(
                 args.evaluate, expected_pose_model=config["pose_model"]

@@ -1,0 +1,36 @@
+# Orthorectification configuration for as250026 / sijean00001-atlans-calib00001.
+# Calibration is intentionally skipped: all IMU-camera corrections are zero.
+time_shift_to_add_to_image: 0
+imu_source: 'atlans'
+note: "Sijean01, SILEX 2025-07-26"
+
+dirTelops: '/home/paugam/Data/ATR42/as250026/telops'
+extractionName: 'sijean00001-atlans-calib00001'
+flightname: 'as250026'
+flightdate: 20250726
+
+start_FrameID: null
+end_FrameID: null
+start_dt: null
+end_dt: null
+dt_period: 0.1
+idimgs: [1]
+filter: 1
+image_glob: '*.tif'
+
+# Existing raw SAFIRE navigation data; no calibration JSON is supplied.
+imu: '/home/paugam/Data/ATR42/as250026/imu/SILEX-2025_SAFIRE-ATR42_SAFIRE_NAV_ATLANS_200HZ_20250726_as250026_L1_V1.nc'
+calibration: '/home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/calib/imu_camera_calibration_atlans.json'
+
+input_dir: '/home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/tif_f1'
+output_dir: '/home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/full_ortho_f1_atlans'
+drift_input_dir: '/home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/tif_f1'
+drift_reference_dir: '/home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/full_ortho_f1_atlans'
+drift_output_dir: '/home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/imu_drift_atlans'
+dem: '/home/paugam/Data/ATR42/as250026/Transects/sijean00001-atlans-calib00001/dem/sijean00001_rgealti.tif'
+int_param: '/home/paugam/Data/ATR42/as250026/camera-io/camera-as250026.yaml'
+
+# Explicit zero correction for reproducibility. The runner uses these values
+# when no calibration file is provided.
+correction_xyz: [0.0, 0.0, 0.0]
+correction_opk: [0.0, 0.0, 0.0]

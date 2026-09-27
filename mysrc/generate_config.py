@@ -23,6 +23,10 @@ def main() -> int:
         help="Seconds to add to image timestamps (default: 0)",
     )
     parser.add_argument(
+        "--root-data-dir", default="/data/shared/PIPER",
+        help="Root data directory substituted for <root_data_dir> in the template",
+    )
+    parser.add_argument(
         "--template", type=Path,
         default=Path("config/config-flightname-transectname-imuname.yaml"),
     )
@@ -41,6 +45,13 @@ def main() -> int:
         raise FileNotFoundError(f"Calibration file not found: {calibration}")
     print(f"Using calibration: {calibration}")
 
+    calibration_payload = json.loads(calibration.read_text(encoding="utf-8"))
+    calibration_pairs = calibration_payload.get("pairs") or []
+    calibration_image = calibration_pairs[0].get("image", "") if calibration_pairs else ""
+    input_image_dir = "tif_f1_320" if "tif_f1_320" in calibration_image else "tif_f1"
+    camera_io_suffix = "-320" if input_image_dir == "tif_f1_320" else ""
+    print(f"Calibration image directory: {input_image_dir} (from {calibration_image or 'no pairs recorded'})")
+
     values = {
         "flightname": args.flightname,
         "transectname": output_transect,
@@ -51,6 +62,9 @@ def main() -> int:
         "timelagcamera": f"{args.time_shift:g}",
         "calibration": str(calibration),
         "note": json.dumps(args.note),
+        "root_data_dir": args.root_data_dir,
+        "input_image_dir": input_image_dir,
+        "camera_io_suffix": camera_io_suffix,
     }
     template = args.template.read_text(encoding="utf-8")
 

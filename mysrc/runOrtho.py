@@ -188,12 +188,13 @@ def orthro(
         # SAFIRE NetCDF navigation product. Keep it as xarray because
         # imutogeojson supports xarray interpolation directly.
         imu = xr.open_dataset(imufile)
-        imu = imu.rename({
+        rename = {
             "HEIGHT_WGS84": "ALTITUDE",
             "ROLL": "ROLL_smooth",
             "PITCH": "PITCH_smooth",
             "THEAD": "THEAD_smooth",
-        })
+        }
+        imu = imu.rename({key: value for key, value in rename.items() if key in imu})
     else:
         imu = gpd.read_file(imufile)
         imu = imu.dropna(subset=["latitude"])

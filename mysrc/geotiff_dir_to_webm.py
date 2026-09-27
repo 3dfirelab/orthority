@@ -26,9 +26,34 @@ import yaml
 import xarray as xr
 from affine import Affine
 from rasterio.enums import Resampling
+from rasterio.features import shapes as raster_shapes
 from rasterio.transform import array_bounds, from_origin
 from rasterio.warp import reproject, transform, transform_bounds
+from shapely.geometry import shape as shapely_shape
+from shapely.ops import unary_union
 from PIL import Image, ImageDraw, ImageFont
+
+
+# seaborn "mako" colormap, 256 RGB entries (seaborn.cm._mako_lut scaled to 0-255).
+COLORMAP_NAME = "mako"
+COLORMAP_LUT = np.frombuffer(bytes.fromhex(
+    "0b04050d04060e05080f060910060a11070c12080d13090f140910150a12160b13170c15180d16190e181a0e191b0f1a"
+    "1c101c1d111d1e111f1f122020132221142322142523152624162825172926172b27182d28192e291930291a312a1b33"
+    "2b1c352c1c362d1d382e1e392e1e3b2f1f3d30203e31214031214232224333234534244734254835254a35264c36274d"
+    "37284f372851382953382a54392b563a2c583a2c593b2d5b3b2e5d3b2f5f3c30603c31623d31643d32663e33673e3469"
+    "3e356b3f366d3f366f3f3770403872403974403a76403b78403c79413d7b413e7d413e7f413f80414082414184414285"
+    "41438741448840468a40478b40488d40498e3f4a8f3f4b903f4c923e4d933e4f943e50953d51953d52963c53973c5598"
+    "3b56983b57993b589a3a599a3a5b9b3a5c9b395d9c395e9c385f9c38619d38629d38639d37649e37659e37669e37689f"
+    "36699f366a9f366b9f366ca0366da0366fa03670a03671a03572a13573a13574a13575a13576a23578a23579a2357aa2"
+    "357ba3357ca3357da3357ea4347fa43480a43482a43483a53484a53485a53486a53487a63488a63489a6348ba6348ca7"
+    "348da7348ea7348fa73490a83491a83492a83493a83495a93496a93497a93498a93499aa349aaa359baa359caa359eaa"
+    "359fab35a0ab35a1ab36a2ab36a3ab36a4ab37a5ac37a6ac37a8ac38a9ac38aaac39abac39acac3aadac3aaead3bafad"
+    "3cb1ad3cb2ad3db3ad3eb4ad3fb5ad3fb6ad40b7ad41b8ad42b9ad43baad44bcad45bdad46bead47bfad48c0ad49c1ad"
+    "4bc2ad4cc3ad4dc4ad4fc5ad50c6ad52c7ad53c9ad55caad57cbad59ccad5bcdad5ecdad60ceac62cfac65d0ad68d1ad"
+    "6ad2ad6dd3ad70d4ad73d4ad76d5ae79d6ae7cd6af7fd7af82d8b085d9b188d9b18bdab28edbb391dbb494dcb596ddb5"
+    "99ddb69cdeb79edfb8a1dfb9a4e0bba6e1bca9e1bdabe2beaee3c0b0e4c1b2e4c2b5e5c4b7e6c5b9e6c7bbe7c8bee8ca"
+    "c0e9ccc2e9cdc4eacfc6ebd1c8ecd2caedd4ccedd6ceeed7d0efd9d2f0dbd4f1dcd6f1ded8f2e0daf3e1dcf4e3def5e5"
+), dtype=np.uint8).reshape(256, 3)
 
 
 @dataclass(frozen=True)
@@ -56,6 +81,8 @@ def parse_args() -> argparse.Namespace:
                         help="Use every Nth TIFF to calculate the display stretch (default: 10)")
     parser.add_argument("--max-frames", type=int, help="Encode only the first N frames (preview/testing)")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output")
+    parser.add_argument("--manifest-only", action="store_true",
+                        help="Only rewrite the manifest JSON beside an existing WebM (no encoding)")
     return parser.parse_args()
 
 
@@ -136,7 +163,7 @@ def add_attitude(frames: list[Frame], config_path: Path, config: dict, imu_sourc
         roll_values = imu["roll_deg"].to_numpy(float)
         pitch_values = imu["pitch_deg"].to_numpy(float)
         yaw_values = imu["heading_deg"].to_numpy(float)
-    frame_times = pd.to_datetime([frame.acquired for frame in frames], utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy()
+    frame_times = pd.to_datetime([frame.acquired for frame in frames], utc=True, format="mixed").astype("datetime64[ns, UTC]").astype("int64").to_numpy()
     order = np.argsort(imu_times)
     imu_times = imu_times[order]
     if frame_times[0] < imu_times[0] or frame_times[-1] > imu_times[-1]:
@@ -170,12 +197,12 @@ def add_ecc_norm(frames: list[Frame], config_path: Path, config: dict, imu_sourc
     missing = required - set(table.columns)
     if missing:
         raise ValueError(f"ECC CSV is missing columns: {', '.join(sorted(missing))}")
-    table["time"] = pd.to_datetime(table["time"], utc=True)
-    table["reference_time"] = pd.to_datetime(table["reference_time"], utc=True)
+    table["time"] = pd.to_datetime(table["time"], utc=True, format="mixed")
+    table["reference_time"] = pd.to_datetime(table["reference_time"], utc=True, format="mixed")
     table = table[np.isfinite(table["runortho_shift_apply_norm_px"])].sort_values("time")
     ecc_times = table["time"].astype("datetime64[ns, UTC]").astype("int64").to_numpy()
     ecc_values = table["runortho_shift_apply_norm_px"].to_numpy(float)
-    frame_times = pd.to_datetime([frame.acquired for frame in frames], utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy()
+    frame_times = pd.to_datetime([frame.acquired for frame in frames], utc=True, format="mixed").astype("datetime64[ns, UTC]").astype("int64").to_numpy()
     values = np.interp(frame_times, ecc_times, ecc_values, left=np.nan, right=np.nan)
     shift_seconds = float(np.median((table["time"] - table["reference_time"]).dt.total_seconds()))
     print(f"Using ECC norm: {drift_csv} (image-pair offset {shift_seconds:g}s)")
@@ -238,6 +265,37 @@ def track_grid(frames: list[Frame], width: int) -> tuple[Affine, int, int, raste
     height = even(int(np.ceil((top - bottom) / resolution)))
     return from_origin(left, top, resolution, resolution), even(width), height, target_crs
 
+def _load_webm_range_override(tif_dir: Path) -> tuple[float, float] | None:
+    """Look up a fixed display range for this transect in <flight_dir>/webm-range.txt.
+
+    Each non-empty line has the form "<transect_dir_name> <low>, <high>". The
+    transect dir name is the ortho directory's parent (e.g.
+    "sijean00001-atlans-calib00001"), and <flight_dir> is three levels up from
+    the ortho directory (.../<flightname>/Transects/<transect_dir>/<tif_dir>).
+    """
+    flight_dir = tif_dir.resolve().parent.parent.parent
+    override_file = flight_dir / "webm-range.txt"
+    if not override_file.is_file():
+        return None
+    transect_name = tif_dir.resolve().parent.name
+    for line in override_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, _, rest = line.partition(" ")
+        if name != transect_name:
+            continue
+        try:
+            low_text, high_text = rest.split(",", 1)
+            low, high = float(low_text), float(high_text)
+        except ValueError:
+            raise ValueError(f"Malformed webm-range.txt line for {name!r}: {line!r}")
+        if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+            raise ValueError(f"Invalid webm-range.txt range for {name!r}: {line!r}")
+        return low, high
+    return None
+
+
 def display_range(frames: list[Frame], percentiles: tuple[float, float], stride: int) -> tuple[float, float]:
     samples = []
     for frame in frames[::stride]:
@@ -282,7 +340,7 @@ def encode(frames: list[Frame], output: Path, transform: Affine, width: int, hei
             valid = np.isfinite(mosaic)
             image = np.clip((mosaic - low) * 255 / (high - low), 0, 255)
             image = np.nan_to_num(image, nan=0.0, posinf=255.0, neginf=0.0).astype(np.uint8)
-            rgb = np.repeat(image[:, :, None], 3, axis=2)
+            rgb = COLORMAP_LUT[image]
             alpha = np.where(valid, 255, 0).astype(np.uint8)
             image = np.dstack((rgb, alpha))
             assert process.stdin is not None
@@ -303,8 +361,71 @@ def encode(frames: list[Frame], output: Path, transform: Affine, width: int, hei
             temporary.unlink()
 
 
+def _reduce_to_quad(ring: np.ndarray) -> np.ndarray:
+    """Reduce a convex ring (N x 2, open) to its 4 corners.
+
+    Repeatedly drops the vertex whose removal loses the least area, which keeps
+    the dominant corners of a projected image rectangle.
+    """
+    points = [tuple(point) for point in ring]
+    while len(points) > 4:
+        losses = []
+        for index in range(len(points)):
+            (ax, ay), (bx, by), (cx, cy) = points[index - 1], points[index], points[(index + 1) % len(points)]
+            losses.append(abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)))
+        del points[int(np.argmin(losses))]
+    return np.asarray(points)
+
+
+def frame_footprint(
+    dataset: rasterio.DatasetReader,
+    wgs84: rasterio.crs.CRS,
+) -> list[list[float]] | None:
+    """Return the ground footprint of the original camera image as a closed [lon, lat] ring.
+
+    The ortho is an axis-aligned raster where pixels outside the projected
+    camera image are NaN (despite nodata=0). The finite region is the original
+    image frame projected on the ground, so its convex hull is reduced to the
+    four image corners. This is the original image frame, not the ortho's
+    axis-aligned bounding box.
+    """
+    valid = np.isfinite(dataset.read(1)) & (dataset.read_masks(1) != 0)
+    if not valid.any():
+        return None
+    polygons = [
+        shapely_shape(geometry)
+        for geometry, value in raster_shapes(valid.astype("uint8"), transform=dataset.transform)
+        if value == 1
+    ]
+    if not polygons:
+        return None
+    hull = unary_union(polygons).convex_hull
+    if hull.geom_type != "Polygon":
+        return None
+    corners = _reduce_to_quad(np.asarray(hull.exterior.coords)[:-1])
+    xs, ys = list(corners[:, 0]), list(corners[:, 1])
+    if dataset.crs != wgs84:
+        xs, ys = transform(dataset.crs, wgs84, xs, ys)
+    ring = [[float(x), float(y)] for x, y in zip(xs, ys)]
+    return ring + [ring[0]]
+
+
+def colorbar_info(display: tuple[float, float]) -> dict:
+    """Describe the WebM color mapping so a client can draw the matching colorbar."""
+    low, high = display
+    return {
+        "colormap": COLORMAP_NAME,
+        "vmin": float(low),
+        "vmax": float(high),
+        "clipped": True,  # values outside [vmin, vmax] use the end colors
+        "nodata": "transparent",
+        # 256 colors evenly spaced from vmin (index 0) to vmax (index 255).
+        "colors": [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in COLORMAP_LUT],
+    }
+
+
 def write_manifest(output: Path, frames: list[Frame], transform_: Affine, width: int, height: int,
-                   crs: rasterio.crs.CRS, fps: float) -> Path:
+                   crs: rasterio.crs.CRS, fps: float, display: tuple[float, float]) -> Path:
     raster_bounds = array_bounds(height, width, transform_)
     wgs84 = rasterio.crs.CRS.from_epsg(4326)
     west, south, east, north = transform_bounds(crs, wgs84, *raster_bounds, densify_pts=21)
@@ -313,6 +434,7 @@ def write_manifest(output: Path, frames: list[Frame], transform_: Affine, width:
     for index, frame in enumerate(frames):
         with rasterio.open(frame.path) as dataset:
             frame_bounds = tuple(dataset.bounds)
+            footprint_lonlat = frame_footprint(dataset, wgs84)
             if dataset.crs != wgs84:
                 frame_bounds = transform_bounds(dataset.crs, wgs84, *frame_bounds, densify_pts=21)
                 center_x, center_y = dataset.xy((dataset.height - 1) / 2, (dataset.width - 1) / 2)
@@ -321,6 +443,12 @@ def write_manifest(output: Path, frames: list[Frame], transform_: Affine, width:
             else:
                 center_x, center_y = dataset.xy((dataset.height - 1) / 2, (dataset.width - 1) / 2)
                 center = [float(center_y), float(center_x)]
+        footprint = None
+        if footprint_lonlat is not None:
+            footprint = {
+                "geojson": {"type": "Polygon", "coordinates": [footprint_lonlat]},
+                "leaflet": [[lat, lon] for lon, lat in footprint_lonlat],
+            }
         frame_entries.append({
             "video_frame": index + 1,
             "file": frame.path.name,
@@ -337,6 +465,7 @@ def write_manifest(output: Path, frames: list[Frame], transform_: Affine, width:
                 "leaflet": [[float(frame_bounds[1]), float(frame_bounds[0])],
                              [float(frame_bounds[3]), float(frame_bounds[2])]],
             },
+            "footprint": footprint,
         })
     manifest_path = output.with_suffix(".manifest.json")
     payload = {
@@ -355,6 +484,7 @@ def write_manifest(output: Path, frames: list[Frame], transform_: Affine, width:
                    "bounds_order": "west,south,east,north", "leaflet_bounds": leaflet_bounds,
                    "raster_crs": crs.to_string(), "raster_bounds": list(raster_bounds),
                    "transform": list(transform_), "fps": fps},
+        "colorbar": colorbar_info(display),
         "frames": frame_entries,
     }
     manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -368,7 +498,7 @@ def main() -> int:
         raise ValueError("--fps, --width, and --sample-stride must be positive")
     if not 0 <= args.percentiles[0] < args.percentiles[1] <= 100:
         raise ValueError("--percentiles must be ordered values from 0 to 100")
-    if shutil.which("ffmpeg") is None:
+    if not args.manifest_only and shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg was not found on PATH")
     if not args.config.is_file():
         raise ValueError(f"Config file does not exist: {args.config}")
@@ -379,13 +509,24 @@ def main() -> int:
     if args.max_frames:
         frames = frames[:args.max_frames]
     output = args.output or args.tif_dir / f"{args.tif_dir.name}_track.webm"
-    if output.exists() and not args.overwrite:
+    if args.manifest_only and not output.is_file():
+        raise ValueError(f"--manifest-only needs an existing WebM: {output}")
+    if not args.manifest_only and output.exists() and not args.overwrite:
         raise FileExistsError(f"Output exists: {output} (pass --overwrite to replace it)")
     transform, width, height, crs = track_grid(frames, args.width)
-    display = display_range(frames, tuple(args.percentiles), args.sample_stride)
+    override = _load_webm_range_override(args.tif_dir)
+    if override is not None:
+        display = override
+        print(f"Using webm-range.txt override for {args.tif_dir.resolve().parent.name}: {display}")
+    else:
+        display = display_range(frames, tuple(args.percentiles), args.sample_stride)
+    if args.manifest_only:
+        manifest = write_manifest(output, frames, transform, width, height, crs, args.fps, display)
+        print(f"Wrote manifest {manifest}")
+        return 0
     print(f"Encoding {len(frames)} cumulative frames at {width}x{height}; display range={display}")
     encode(frames, output, transform, width, height, crs, display, args.fps, args.crf, ecc_shift_seconds)
-    manifest = write_manifest(output, frames, transform, width, height, crs, args.fps)
+    manifest = write_manifest(output, frames, transform, width, height, crs, args.fps, display)
     print(f"Wrote {output}")
     print(f"Wrote manifest {manifest}")
     return 0

@@ -15,6 +15,8 @@ calib_file_input=""
 overwriteflag=""
 time_lag_override=""
 run_tag=""
+root_data_dir="/data/shared/PIPER"
+skip_to_calibration=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --flightname)
@@ -53,6 +55,11 @@ while [[ $# -gt 0 ]]; do
     --run-tag)
       [[ $# -ge 2 ]] || { echo "Error: --run-tag requires a value." >&2; exit 2; }
       run_tag=$2; shift 2 ;;
+    --root-data-dir)
+      [[ $# -ge 2 ]] || { echo "Error: --root-data-dir requires a value." >&2; exit 2; }
+      root_data_dir=$2; shift 2 ;;
+    --skip-to-calibration)
+      skip_to_calibration=true; shift 1 ;;
     *)
       echo "Error: unknown option: $1" >&2
       exit 2
@@ -68,6 +75,10 @@ for required in flightname flight_date transec_prefix transec_number name_imu fi
 done
 if [[ -z "$overwriteflag" ]]; then
   echo "Error: --overwrite true|false is required." >&2
+  exit 2
+fi
+if [[ "$skip_to_calibration" == true && -z "$time_lag_override" ]]; then
+  echo "Error: --time-lag is required when --skip-to-calibration is set (step 0.1, which would estimate it, is skipped)." >&2
   exit 2
 fi
 
@@ -108,7 +119,7 @@ calib_config_file="config/calibration"-"$flightname"-"$base_name"-"$name_imu".ya
 
 if [[ "$run_calibration" == true ]]; then
   # Calibrating this transect: use the calibration YAML and its output.
-  calib_file="/data/shared/PIPER/$flightname/Transects/$calib_transect_name/calib/imu_camera_calibration_${name_imu}.json"
+  calib_file="$root_data_dir/$flightname/Transects/$calib_transect_name/calib/imu_camera_calibration_${name_imu}.json"
 else
   # Reusing another transect's calibration: use the validated full path.
   calib_file="$calib_file_input"
@@ -126,7 +137,7 @@ else
 fi
 bas_name="${base_name}-${name_imu}${run_tag_suffix}-${calib_name}"
 name_capital=$(echo "$name_imu" | cut -d'_' -f1 | tr '[:lower:]' '[:upper:]')
-root=/data/shared/PIPER/$flightname/Transects/$bas_name
+root=$root_data_dir/$flightname/Transects/$bas_name
 config_file=config/config-$flightname-$bas_name.yaml
 ortho_dir=$root/full_ortho_f1_$name_imu
 corr_dir=$root/${name_imu}_correlation_timeseries
@@ -170,52 +181,57 @@ run_task() {
   fi
 }
 
-# 0. Initialize
-# 0.0transect structure and link raw images
-run_task 0 "transect initialization" "$root/io/camera.yaml" \
-  python init_transect.py \
-    --transects-dir /data/shared/PIPER/$flightname/Transects \
-    --prefix "$transec_prefix" --number "$transec_number" --output-name "$bas_name" \
-    --manifest /data/shared/PIPER/$flightname/Transects/report_legs.csv \
-    --raw-dir /data/shared/PIPER/$flightname/bas
-
-log_dir=$root/run_logs
-mkdir -p "$log_dir"
-
-# 0.1 Estimate image/IMU time lag from optical flow
-motion_dir="$root/image_sequence_motion_$name_imu"
-lag_file="$motion_dir/best_time_lag.txt"
-if [[ -n "$time_lag_override" ]]; then
+if [[ "$skip_to_calibration" == true ]]; then
   timelag=$time_lag_override
-  echo "[0.1] Using fixed time lag: ${timelag} s"
+  echo "[0/0.1/1/2] Skipping (--skip-to-calibration); using fixed time lag: ${timelag} s"
 else
-  run_task 0.1 "image motion and time-lag estimation" "$lag_file" \
-    python image_sequence_motion.py \
-      --images-dir "$root/tif_f1" \
-      --imu "$file_imu" \
-      --output-dir "$motion_dir"
+  # 0. Initialize
+  # 0.0transect structure and link raw images
+  run_task 0 "transect initialization" "$root/io/camera.yaml" \
+    python init_transect.py \
+      --transects-dir $root_data_dir/$flightname/Transects \
+      --prefix "$transec_prefix" --number "$transec_number" --output-name "$bas_name" \
+      --manifest $root_data_dir/$flightname/Transects/report_legs.csv \
+      --raw-dir $root_data_dir/$flightname/bas
 
-  timelag=$(awk -F= '$1 == "time_lag_seconds" {print $2}' "$lag_file")
-  if [[ -z "$timelag" ]]; then
-    echo "[0.1] FAILED: no time_lag_seconds found in $lag_file"
-    exit 1
+  log_dir=$root/run_logs
+  mkdir -p "$log_dir"
+
+  # 0.1 Estimate image/IMU time lag from optical flow
+  motion_dir="$root/image_sequence_motion_$name_imu"
+  lag_file="$motion_dir/best_time_lag.txt"
+  if [[ -n "$time_lag_override" ]]; then
+    timelag=$time_lag_override
+    echo "[0.1] Using fixed time lag: ${timelag} s"
+  else
+    run_task 0.1 "image motion and time-lag estimation" "$lag_file" \
+      python image_sequence_motion.py \
+        --images-dir "$root/tif_f1" \
+        --imu "$file_imu" \
+        --output-dir "$motion_dir"
+
+    timelag=$(awk -F= '$1 == "time_lag_seconds" {print $2}' "$lag_file")
+    if [[ -z "$timelag" ]]; then
+      echo "[0.1] FAILED: no time_lag_seconds found in $lag_file"
+      exit 1
+    fi
+    echo "[0.1] Using estimated time lag: ${timelag} s"
   fi
-  echo "[0.1] Using estimated time lag: ${timelag} s"
-fi
 
-# 1. Crop input images to 320x241
-if [[ "$overwrite" == true ]]; then
-  crop_args=(python crop_tif_f1_320.py "$root/tif_f1" --output-dir "$root/tif_f1_320" --overwrite)
-else
-  crop_args=(python crop_tif_f1_320.py "$root/tif_f1" --output-dir "$root/tif_f1_320")
-fi
-run_task 1 "320x241 crop" "$root/tif_f1_320" "${crop_args[@]}"
+  # 1. Crop input images to 320x241
+  if [[ "$overwrite" == true ]]; then
+    crop_args=(python crop_tif_f1_320.py "$root/tif_f1" --output-dir "$root/tif_f1_320" --overwrite)
+  else
+    crop_args=(python crop_tif_f1_320.py "$root/tif_f1" --output-dir "$root/tif_f1_320")
+  fi
+  run_task 1 "320x241 crop" "$root/tif_f1_320" "${crop_args[@]}"
 
-# 2. Create transect DEM
-run_task 2 "transect DEM" "$root/dem/${base_name}_rgealti.tif" \
-  python create_transect_dem.py "$root" \
-    --image-dir "$root/tif_f1" --imu-dir /data/shared/PIPER/$flightname/imu \
-    --dem-root /data/shared/RGEALTI_IGN --buffer-km 5
+  # 2. Create transect DEM
+  run_task 2 "transect DEM" "$root/dem/${base_name}_rgealti.tif" \
+    python create_transect_dem.py "$root" \
+      --image-dir "$root/tif_f1" --imu-dir $root_data_dir/$flightname/imu \
+      --dem-root /data/shared/RGEALTI_IGN --buffer-km 5
+fi
 
 # 3. Generate orthorectification configuration
 # 3.0 Calibrate boresight only when the selected calibration transect is this
@@ -234,7 +250,8 @@ run_task 3 "configuration generation" "$config_file" \
     --flightname "$flightname" --transectname "$bas_name" --imuname "$name_imu" \
     --imufilename "$file_imu" --flightdate "$flight_date" \
     --defaultcalibration "$calib_file" --calib-transect "$calib_transect" \
-    --note "$flightnote" --time-shift "$timelag"
+    --note "$flightnote" --time-shift "$timelag" \
+    --root-data-dir "$root_data_dir"
 
 # 4. Run orthorectification
 run_task 4 "orthorectification" "$ortho_dir" \
@@ -243,7 +260,7 @@ run_task 4 "orthorectification" "$ortho_dir" \
 # 5. Compute performance:
 # 5.1 ortho correlation
 corr_csv="$corr_dir/ortho_correlation_timeseries_${name_capital}.csv"
-run_task 5 "ortho correlation" "$corr_csv" \
+run_task 5.1 "ortho correlation" "$corr_csv" \
   python correlate_ortho_sequence.py "$ortho_dir" \
     --imu "$file_imu"  \
     --output-dir "$corr_dir"
@@ -263,7 +280,7 @@ fi
 run_task 6 "WebM generation" "$webm" "${webm_args[@]}"
 
 # 7. Publish results to website
-webdir=/data/shared/PIPER/website/data/${flightname}-${bas_name}
+webdir=$root_data_dir/website/data/${flightname}-${bas_name}
 website_sentinel="$webdir/$(basename "$webm")"
 if [[ "$overwrite" == false && -e "$website_sentinel" ]]; then
   echo "[7] Skipping website publication; already completed: $website_sentinel"

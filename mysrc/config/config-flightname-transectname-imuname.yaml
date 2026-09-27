@@ -4,7 +4,7 @@ time_shift_to_add_to_image: <timelagcamera>
 imu_source: '<imuname>'
 note: <note>
 
-dirTelops: '/data/shared/PIPER/<flightname>/telops'
+dirTelops: '<root_data_dir>/<flightname>/telops'
 extractionName: '<transectname>'
 flightname: '<flightname>'
 flightdate: <flightdate>
@@ -22,13 +22,13 @@ image_glob: '*.tif'
 imu: '<imufilename>'
 calibration: '<calibration>'
 
-input_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/tif_f1_320'
-output_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/full_ortho_f1_<imuname>'
-drift_input_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/tif_f1_320'
-drift_reference_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/full_ortho_f1_<imuname>'
-drift_output_dir: '/data/shared/PIPER/<flightname>/Transects/<transectname>/imu_drift_<imuname>'
-dem: '/data/shared/PIPER/<flightname>/Transects/<transectname>/dem/<demname>_rgealti.tif'
-int_param: '/data/shared/PIPER/<flightname>/camera-io/camera-<flightname>-320.yaml'
+input_dir: '<root_data_dir>/<flightname>/Transects/<transectname>/<input_image_dir>'
+output_dir: '<root_data_dir>/<flightname>/Transects/<transectname>/full_ortho_f1_<imuname>'
+drift_input_dir: '<root_data_dir>/<flightname>/Transects/<transectname>/<input_image_dir>'
+drift_reference_dir: '<root_data_dir>/<flightname>/Transects/<transectname>/full_ortho_f1_<imuname>'
+drift_output_dir: '<root_data_dir>/<flightname>/Transects/<transectname>/imu_drift_<imuname>'
+dem: '<root_data_dir>/<flightname>/Transects/<transectname>/dem/<demname>_rgealti.tif'
+int_param: '<root_data_dir>/<flightname>/camera-io/camera-<flightname><camera_io_suffix>.yaml'
 
 # Explicit zero correction for reproducibility. The runner uses these values
 # when no calibration file is provided.
